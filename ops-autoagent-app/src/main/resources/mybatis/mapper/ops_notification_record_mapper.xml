@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.opsautoagent.infrastructure.dao.IOpsNotificationRecordDao">
+
+    <insert id="insert" parameterType="com.opsautoagent.infrastructure.dao.po.OpsNotificationRecord" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO ops_notification_record (
+            notification_id, diagnosis_id, service_name, channel, receiver, severity, subject,
+            send_status, retry_count, error_message, send_time, create_time
+        ) VALUES (
+            #{notificationId}, #{diagnosisId}, #{serviceName}, #{channel}, #{receiver}, #{severity}, #{subject},
+            #{sendStatus}, #{retryCount}, #{errorMessage}, #{sendTime}, #{createTime}
+        )
+    </insert>
+
+</mapper>
+

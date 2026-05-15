@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.opsautoagent.infrastructure.dao.IOpsAlertEventDao">
+
+    <insert id="insert" parameterType="com.opsautoagent.infrastructure.dao.po.OpsAlertEvent" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO ops_alert_event (
+            event_id, source, service_name, alert_rule, severity, status, fingerprint, trace_id,
+            starts_at, ends_at, labels_json, annotations_json, raw_payload, received_time, create_time
+        ) VALUES (
+            #{eventId}, #{source}, #{serviceName}, #{alertRule}, #{severity}, #{status}, #{fingerprint}, #{traceId},
+            #{startsAt}, #{endsAt}, #{labelsJson}, #{annotationsJson}, #{rawPayload}, #{receivedTime}, #{createTime}
+        )
+    </insert>
+
+</mapper>
+

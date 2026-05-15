@@ -1,0 +1,47 @@
+groups:
+  - name: ops-autoagent-rules
+    interval: 15s
+    rules:
+      - alert: GroupBuyMarketAppDown
+        expr: up{job="ops-demo-service"} == 0
+        for: 1m
+        labels:
+          severity: P1
+          serviceName: ops-demo-service
+          service: ops-demo-service
+        annotations:
+          summary: "ops-demo-service instance is down"
+          description: "Prometheus cannot scrape the Spring Boot actuator endpoint."
+
+      - alert: GroupBuyMarketAppHttp5xxHigh
+        expr: |
+          (
+            sum(rate(http_server_requests_seconds_count{application="ops-demo-service",status=~"5.."}[2m]))
+            /
+            clamp_min(sum(rate(http_server_requests_seconds_count{application="ops-demo-service"}[2m])), 0.001)
+          ) > 0.20
+        for: 30s
+        labels:
+          severity: P2
+          serviceName: ops-demo-service
+          service: ops-demo-service
+        annotations:
+          summary: "ops-demo-service 5xx rate is high"
+          description: "5xx ratio is above 20% in the last 2 minutes."
+
+      - alert: GroupBuyMarketAppLatencyHigh
+        expr: |
+          (
+            sum(rate(http_server_requests_seconds_sum{application="ops-demo-service"}[2m]))
+            /
+            clamp_min(sum(rate(http_server_requests_seconds_count{application="ops-demo-service"}[2m])), 0.001)
+          ) > 1.0
+        for: 1m
+        labels:
+          severity: P2
+          serviceName: ops-demo-service
+          service: ops-demo-service
+        annotations:
+          summary: "ops-demo-service average latency is high"
+          description: "Average latency is above 1 second in the last 2 minutes."
+

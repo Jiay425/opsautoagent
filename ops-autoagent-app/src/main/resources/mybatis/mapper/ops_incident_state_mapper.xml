@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.opsautoagent.infrastructure.dao.IOpsIncidentStateDao">
+
+    <resultMap id="OpsIncidentStateMap" type="com.opsautoagent.infrastructure.dao.po.OpsIncidentState">
+        <id column="id" property="id"/>
+        <result column="state_id" property="stateId"/>
+        <result column="diagnosis_id" property="diagnosisId"/>
+        <result column="session_id" property="sessionId"/>
+        <result column="event_id" property="eventId"/>
+        <result column="service_name" property="serviceName"/>
+        <result column="severity" property="severity"/>
+        <result column="alert_rule" property="alertRule"/>
+        <result column="time_window_json" property="timeWindowJson"/>
+        <result column="current_round" property="currentRound"/>
+        <result column="max_rounds" property="maxRounds"/>
+        <result column="plan_json" property="planJson"/>
+        <result column="metrics_evidence_json" property="metricsEvidenceJson"/>
+        <result column="log_evidence_json" property="logEvidenceJson"/>
+        <result column="trace_evidence_json" property="traceEvidenceJson"/>
+        <result column="runbook_evidence_json" property="runbookEvidenceJson"/>
+        <result column="candidate_root_causes_json" property="candidateRootCausesJson"/>
+        <result column="missing_evidence_json" property="missingEvidenceJson"/>
+        <result column="tool_history_json" property="toolHistoryJson"/>
+        <result column="review_status" property="reviewStatus"/>
+        <result column="final_report" property="finalReport"/>
+        <result column="status" property="status"/>
+        <result column="error_message" property="errorMessage"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.opsautoagent.infrastructure.dao.po.OpsIncidentState" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO ops_incident_state (
+            state_id, diagnosis_id, session_id, event_id, service_name, severity, alert_rule, time_window_json,
+            current_round, max_rounds, plan_json, metrics_evidence_json, log_evidence_json, trace_evidence_json,
+            runbook_evidence_json, candidate_root_causes_json, missing_evidence_json, tool_history_json,
+            review_status, final_report, status, error_message, create_time, update_time
+        ) VALUES (
+            #{stateId}, #{diagnosisId}, #{sessionId}, #{eventId}, #{serviceName}, #{severity}, #{alertRule}, #{timeWindowJson},
+            #{currentRound}, #{maxRounds}, #{planJson}, #{metricsEvidenceJson}, #{logEvidenceJson}, #{traceEvidenceJson},
+            #{runbookEvidenceJson}, #{candidateRootCausesJson}, #{missingEvidenceJson}, #{toolHistoryJson},
+            #{reviewStatus}, #{finalReport}, #{status}, #{errorMessage}, #{createTime}, #{updateTime}
+        )
+    </insert>
+
+    <update id="updateByDiagnosisId" parameterType="com.opsautoagent.infrastructure.dao.po.OpsIncidentState">
+        UPDATE ops_incident_state
+        <set>
+            <if test="currentRound != null">current_round = #{currentRound},</if>
+            <if test="maxRounds != null">max_rounds = #{maxRounds},</if>
+            <if test="planJson != null">plan_json = #{planJson},</if>
+            <if test="metricsEvidenceJson != null">metrics_evidence_json = #{metricsEvidenceJson},</if>
+            <if test="logEvidenceJson != null">log_evidence_json = #{logEvidenceJson},</if>
+            <if test="traceEvidenceJson != null">trace_evidence_json = #{traceEvidenceJson},</if>
+            <if test="runbookEvidenceJson != null">runbook_evidence_json = #{runbookEvidenceJson},</if>
+            <if test="candidateRootCausesJson != null">candidate_root_causes_json = #{candidateRootCausesJson},</if>
+            <if test="missingEvidenceJson != null">missing_evidence_json = #{missingEvidenceJson},</if>
+            <if test="toolHistoryJson != null">tool_history_json = #{toolHistoryJson},</if>
+            <if test="reviewStatus != null">review_status = #{reviewStatus},</if>
+            <if test="finalReport != null">final_report = #{finalReport},</if>
+            <if test="status != null">status = #{status},</if>
+            <if test="errorMessage != null">error_message = #{errorMessage},</if>
+            <if test="updateTime != null">update_time = #{updateTime},</if>
+        </set>
+        WHERE diagnosis_id = #{diagnosisId}
+    </update>
+
+    <select id="queryByDiagnosisId" parameterType="java.lang.String" resultMap="OpsIncidentStateMap">
+        SELECT id, state_id, diagnosis_id, session_id, event_id, service_name, severity, alert_rule, time_window_json,
+               current_round, max_rounds, plan_json, metrics_evidence_json, log_evidence_json, trace_evidence_json,
+               runbook_evidence_json, candidate_root_causes_json, missing_evidence_json, tool_history_json,
+               review_status, final_report, status, error_message, create_time, update_time
+        FROM ops_incident_state
+        WHERE diagnosis_id = #{diagnosisId}
+        LIMIT 1
+    </select>
+
+</mapper>
+

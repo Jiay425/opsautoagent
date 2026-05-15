@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.opsautoagent.infrastructure.dao.IOpsToolCallLogDao">
+
+    <insert id="insert" parameterType="com.opsautoagent.infrastructure.dao.po.OpsToolCallLog" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO ops_tool_call_log (
+            call_id, session_id, diagnosis_id, tool_name, logical_tool_name, protocol, governance_decision, target, request_summary, response_summary,
+            status_code, cost_millis, success, error_message, create_time
+        ) VALUES (
+            #{callId}, #{sessionId}, #{diagnosisId}, #{toolName}, #{logicalToolName}, #{protocol}, #{governanceDecision}, #{target}, #{requestSummary}, #{responseSummary},
+            #{statusCode}, #{costMillis}, #{success}, #{errorMessage}, #{createTime}
+        )
+    </insert>
+
+</mapper>
+

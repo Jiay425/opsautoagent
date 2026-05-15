@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.opsautoagent.infrastructure.dao.IOpsInvestigationPlanDao">
+
+    <resultMap id="OpsInvestigationPlanMap" type="com.opsautoagent.infrastructure.dao.po.OpsInvestigationPlan">
+        <id column="id" property="id"/>
+        <result column="plan_id" property="planId"/>
+        <result column="diagnosis_id" property="diagnosisId"/>
+        <result column="state_id" property="stateId"/>
+        <result column="round" property="round"/>
+        <result column="alert_type" property="alertType"/>
+        <result column="hypotheses_json" property="hypothesesJson"/>
+        <result column="steps_json" property="stepsJson"/>
+        <result column="required_tools_json" property="requiredToolsJson"/>
+        <result column="expected_evidence_json" property="expectedEvidenceJson"/>
+        <result column="risk_level" property="riskLevel"/>
+        <result column="budget_json" property="budgetJson"/>
+        <result column="plan_json" property="planJson"/>
+        <result column="planner_type" property="plannerType"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.opsautoagent.infrastructure.dao.po.OpsInvestigationPlan" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO ops_investigation_plan (
+            plan_id, diagnosis_id, state_id, round, alert_type, hypotheses_json, steps_json,
+            required_tools_json, expected_evidence_json, risk_level, budget_json, plan_json,
+            planner_type, create_time, update_time
+        ) VALUES (
+            #{planId}, #{diagnosisId}, #{stateId}, #{round}, #{alertType}, #{hypothesesJson}, #{stepsJson},
+            #{requiredToolsJson}, #{expectedEvidenceJson}, #{riskLevel}, #{budgetJson}, #{planJson},
+            #{plannerType}, #{createTime}, #{updateTime}
+        )
+    </insert>
+
+    <select id="queryLatestByDiagnosisId" parameterType="java.lang.String" resultMap="OpsInvestigationPlanMap">
+        SELECT id, plan_id, diagnosis_id, state_id, round, alert_type, hypotheses_json, steps_json,
+               required_tools_json, expected_evidence_json, risk_level, budget_json, plan_json,
+               planner_type, create_time, update_time
+        FROM ops_investigation_plan
+        WHERE diagnosis_id = #{diagnosisId}
+        ORDER BY round DESC, create_time DESC
+        LIMIT 1
+    </select>
+
+</mapper>
+

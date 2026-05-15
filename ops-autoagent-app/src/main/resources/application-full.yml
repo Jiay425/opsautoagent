@@ -1,0 +1,209 @@
+server:
+  port: 8099
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+thread:
+  pool:
+    executor:
+      config:
+        core-pool-size: 20
+        max-pool-size: 50
+        keep-alive-time: 5000
+        block-queue-size: 5000
+        policy: CallerRunsPolicy
+
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
+  mail:
+    host: ${OPS_MAIL_HOST:smtp.qq.com}
+    port: ${OPS_MAIL_PORT:587}
+    username: ${OPS_MAIL_USERNAME:}
+    password: ${OPS_MAIL_PASSWORD:}
+    protocol: smtp
+    default-encoding: UTF-8
+    properties:
+      mail.smtp.auth: ${OPS_MAIL_AUTH:true}
+      mail.smtp.starttls.enable: ${OPS_MAIL_STARTTLS:true}
+  datasource:
+    mysql:
+      username: ${MYSQL_USERNAME:root}
+      password: ${MYSQL_PASSWORD:123456}
+      url: ${MYSQL_URL:jdbc:mysql://127.0.0.1:13306/ops-autoagent-diagnosis?useUnicode=true&characterEncoding=utf8&autoReconnect=true&zeroDateTimeBehavior=convertToNull&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      type: com.zaxxer.hikari.HikariDataSource
+      hikari:
+        pool-name: Retail_HikariCP
+        minimum-idle: 15
+        idle-timeout: 180000
+        maximum-pool-size: 25
+        auto-commit: true
+        max-lifetime: 1800000
+        connection-timeout: 30000
+        connection-test-query: SELECT 1
+    pgvector:
+      enabled: true
+      driver-class-name: org.postgresql.Driver
+      username: ${PGVECTOR_USERNAME:postgres}
+      password: ${PGVECTOR_PASSWORD:postgres}
+      url: ${PGVECTOR_URL:jdbc:postgresql://127.0.0.1:15432/ai-rag-knowledge}
+      type: com.zaxxer.hikari.HikariDataSource
+      hikari:
+        maximum-pool-size: 5
+        minimum-idle: 2
+        idle-timeout: 30000
+        connection-timeout: 30000
+  ai:
+    vectorstore:
+      pgvector:
+        enabled: true
+        table-name: ${OPENAI_VECTOR_TABLE:vector_store_openai}
+    openai:
+      base-url: ${OPENAI_BASE_URL:https://api.pie-xian.com}
+      api-key: ${OPENAI_API_KEY:}
+      chat:
+        options:
+          model: ${OPENAI_CHAT_MODEL:gpt-4o-mini}
+      embedding:
+        enabled: true
+        options:
+          model: ${OPENAI_EMBEDDING_MODEL:qwen3-embedding-8b}
+          dimensions: ${OPENAI_EMBEDDING_DIMENSIONS:768}
+    mcp:
+      client:
+        enabled: true
+    agent:
+      auto-config:
+        enabled: true
+        client-ids: 4101,4102,4103,4104,5101,5102,5103,5104
+
+logging:
+  level:
+    root: info
+    com.opsautoagent: info
+  config: classpath:logback-spring.xml
+
+ops:
+  alert:
+    dedup-window-minutes: 5
+    max-step: 9
+  agent:
+    enabled: true
+    max-rounds: 2
+    max-tool-calls: 12
+    plan-driven:
+      enabled: true
+    planner:
+      enabled: true
+    reviewer:
+      enabled: true
+      min-confidence: 0.75
+    chat:
+      enabled: true
+      required: true
+      use-configured-client: true
+      client-ready-timeout-ms: 120000
+      planner-client-id: "4101"
+      reviewer-client-id: "4102"
+      report-writer-client-id: "4103"
+    tool-policy:
+      enabled: true
+      max-repeat-per-tool: 2
+      disabled-tools: ""
+    skill:
+      enabled: true
+      base-path: ${OPS_AGENT_SKILL_BASE_PATH:../docs/dev-ops/skills}
+    evaluation:
+      enabled: true
+  security:
+    enabled: false
+    api-token:
+  rate-limit:
+    enabled: true
+    max-requests: 20
+    window-seconds: 60
+  runbook:
+    base-path: ${OPS_RUNBOOK_BASE_PATH:../docs/dev-ops/runbook}
+    chunk:
+      size: ${OPS_RUNBOOK_CHUNK_SIZE:180}
+      min-size-chars: ${OPS_RUNBOOK_CHUNK_MIN_SIZE_CHARS:120}
+      min-length-to-embed: ${OPS_RUNBOOK_CHUNK_MIN_LENGTH_TO_EMBED:60}
+      max-num-chunks: ${OPS_RUNBOOK_CHUNK_MAX_NUM_CHUNKS:80}
+      keep-separator: ${OPS_RUNBOOK_CHUNK_KEEP_SEPARATOR:true}
+    embedding:
+      base-url: ${OPS_RUNBOOK_EMBEDDING_BASE_URL:https://api.pie-xian.com}
+      api-key: ${OPS_RUNBOOK_EMBEDDING_API_KEY:}
+      model: ${OPS_RUNBOOK_EMBEDDING_MODEL:qwen3-embedding-8b}
+      dimensions: ${OPS_RUNBOOK_EMBEDDING_DIMENSIONS:768}
+    vector:
+      enabled: true
+      search-enabled: true
+      rebuild-on-startup: ${OPS_RUNBOOK_VECTOR_REBUILD_ON_STARTUP:true}
+      fallback-to-file: ${OPS_RUNBOOK_VECTOR_FALLBACK_TO_FILE:true}
+      fail-fast: false
+      index-batch-size: ${OPS_RUNBOOK_VECTOR_INDEX_BATCH_SIZE:8}
+      index-batch-retries: ${OPS_RUNBOOK_VECTOR_INDEX_BATCH_RETRIES:3}
+    hybrid:
+      enabled: ${OPS_RUNBOOK_HYBRID_ENABLED:true}
+      rrf-k: ${OPS_RUNBOOK_HYBRID_RRF_K:60}
+      vector-weight: ${OPS_RUNBOOK_HYBRID_VECTOR_WEIGHT:1.0}
+      keyword-weight: ${OPS_RUNBOOK_HYBRID_KEYWORD_WEIGHT:1.3}
+  demo:
+    auto-seed:
+      enabled: true
+      app-base-url: http://127.0.0.1:8099
+      elasticsearch-index: ops-demo-service-log-auto-demo
+      service-name: ops-demo-service
+      start-delay-seconds: 3
+      error-count: 12
+      slow-count: 6
+      db-count: 3
+      elasticsearch-max-attempts: 12
+      elasticsearch-retry-interval-seconds: 5
+  integrations:
+    mcp:
+      prefer: false
+      fallback-http: true
+      grafana:
+        mcp-id: 5008
+        query-tool-name: query_prometheus
+        datasource-uid: ${GRAFANA_PROMETHEUS_DATASOURCE_UID:}
+      elasticsearch:
+        mcp-id: 5007
+        search-tool-name: ${ELASTICSEARCH_MCP_SEARCH_TOOL:search}
+    http:
+      connect-timeout-seconds: 5
+      request-timeout-seconds: 15
+    prometheus:
+      base-url: http://127.0.0.1:9090
+      username:
+      password:
+    elk:
+      base-url: http://127.0.0.1:9200
+      index-pattern: ops-demo-service-log-auto-*
+      username:
+      password:
+    skywalking:
+      graphql-url: http://127.0.0.1:12800/graphql
+      username:
+      password:
+  notify:
+    enabled: true
+    email:
+      enabled: true
+    subject-prefix: "[AutoAgent]"
+    app-base-url: http://127.0.0.1:8099
+

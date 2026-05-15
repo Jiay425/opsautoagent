@@ -1,0 +1,125 @@
+server:
+  port: 8099
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+thread:
+  pool:
+    executor:
+      config:
+        core-pool-size: 20
+        max-pool-size: 50
+        keep-alive-time: 5000
+        block-queue-size: 5000
+        policy: CallerRunsPolicy
+
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiEmbeddingAutoConfiguration
+  mail:
+    host: ${OPS_MAIL_HOST:}
+    port: ${OPS_MAIL_PORT:25}
+    username: ${OPS_MAIL_USERNAME:}
+    password: ${OPS_MAIL_PASSWORD:}
+    protocol: smtp
+    default-encoding: UTF-8
+    properties:
+      mail.smtp.auth: ${OPS_MAIL_AUTH:false}
+      mail.smtp.starttls.enable: ${OPS_MAIL_STARTTLS:false}
+  datasource:
+    mysql:
+      username: ${MYSQL_USERNAME:root}
+      password: ${MYSQL_PASSWORD:123456}
+      url: ${MYSQL_URL:jdbc:mysql://127.0.0.1:13306/ops-autoagent-diagnosis?useUnicode=true&characterEncoding=utf8&autoReconnect=true&zeroDateTimeBehavior=convertToNull&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      type: com.zaxxer.hikari.HikariDataSource
+      hikari:
+        pool-name: Retail_HikariCP
+        minimum-idle: 15
+        idle-timeout: 180000
+        maximum-pool-size: 25
+        auto-commit: true
+        max-lifetime: 1800000
+        connection-timeout: 30000
+        connection-test-query: SELECT 1
+    pgvector:
+      enabled: false
+      driver-class-name: org.postgresql.Driver
+      username: ${PGVECTOR_USERNAME:postgres}
+      password: ${PGVECTOR_PASSWORD:postgres}
+      url: ${PGVECTOR_URL:jdbc:postgresql://127.0.0.1:15432/ai-rag-knowledge}
+      type: com.zaxxer.hikari.HikariDataSource
+      hikari:
+        maximum-pool-size: 5
+        minimum-idle: 2
+        idle-timeout: 30000
+        connection-timeout: 30000
+  ai:
+    vectorstore:
+      pgvector:
+        enabled: false
+    openai:
+      base-url: ${OPENAI_BASE_URL:https://apis.itedus.cn}
+      api-key: ${OPENAI_API_KEY:}
+      embedding:
+        enabled: false
+    agent:
+      auto-config:
+        enabled: false
+        client-ids: 3101,3102,3103,3104,4101,4102,4103,4104,5101,5102,5103,5104
+
+logging:
+  level:
+    root: info
+  config: classpath:logback-spring.xml
+
+ops:
+  alert:
+    dedup-window-minutes: 5
+    max-step: 9
+  security:
+    enabled: false
+    api-token:
+  rate-limit:
+    enabled: true
+    max-requests: 20
+    window-seconds: 60
+  runbook:
+    base-path: docs/dev-ops/runbook
+  integrations:
+    http:
+      connect-timeout-seconds: 5
+      request-timeout-seconds: 15
+    prometheus:
+      base-url: http://127.0.0.1:9090
+      username:
+      password:
+    elk:
+      base-url:
+      index-pattern: logs-*
+      username:
+      password:
+    skywalking:
+      graphql-url:
+      username:
+      password:
+  notify:
+    enabled: true
+    email:
+      enabled: true
+    subject-prefix: "[AutoAgent]"
+    app-base-url: http://127.0.0.1:8099
+

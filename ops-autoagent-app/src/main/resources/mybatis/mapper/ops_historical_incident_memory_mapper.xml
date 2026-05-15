@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.opsautoagent.infrastructure.dao.IOpsHistoricalIncidentMemoryDao">
+
+    <resultMap id="OpsHistoricalIncidentMemoryMap" type="com.opsautoagent.infrastructure.dao.po.OpsHistoricalIncidentMemory">
+        <id column="id" property="id"/>
+        <result column="memory_id" property="memoryId"/>
+        <result column="diagnosis_id" property="diagnosisId"/>
+        <result column="service_name" property="serviceName"/>
+        <result column="alert_rule" property="alertRule"/>
+        <result column="severity" property="severity"/>
+        <result column="symptom_summary" property="symptomSummary"/>
+        <result column="evidence_summary" property="evidenceSummary"/>
+        <result column="root_cause_category" property="rootCauseCategory"/>
+        <result column="root_cause_summary" property="rootCauseSummary"/>
+        <result column="remediation_summary" property="remediationSummary"/>
+        <result column="confidence" property="confidence"/>
+        <result column="review_status" property="reviewStatus"/>
+        <result column="time_window_json" property="timeWindowJson"/>
+        <result column="tags" property="tags"/>
+        <result column="similarity_text" property="similarityText"/>
+        <result column="source_record_json" property="sourceRecordJson"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.opsautoagent.infrastructure.dao.po.OpsHistoricalIncidentMemory" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO ops_historical_incident_memory (
+            memory_id, diagnosis_id, service_name, alert_rule, severity, symptom_summary,
+            evidence_summary, root_cause_category, root_cause_summary, remediation_summary,
+            confidence, review_status, time_window_json, tags, similarity_text, source_record_json,
+            create_time, update_time
+        ) VALUES (
+            #{memoryId}, #{diagnosisId}, #{serviceName}, #{alertRule}, #{severity}, #{symptomSummary},
+            #{evidenceSummary}, #{rootCauseCategory}, #{rootCauseSummary}, #{remediationSummary},
+            #{confidence}, #{reviewStatus}, #{timeWindowJson}, #{tags}, #{similarityText}, #{sourceRecordJson},
+            #{createTime}, #{updateTime}
+        )
+        ON DUPLICATE KEY UPDATE
+            service_name = VALUES(service_name),
+            alert_rule = VALUES(alert_rule),
+            severity = VALUES(severity),
+            symptom_summary = VALUES(symptom_summary),
+            evidence_summary = VALUES(evidence_summary),
+            root_cause_category = VALUES(root_cause_category),
+            root_cause_summary = VALUES(root_cause_summary),
+            remediation_summary = VALUES(remediation_summary),
+            confidence = VALUES(confidence),
+            review_status = VALUES(review_status),
+            time_window_json = VALUES(time_window_json),
+            tags = VALUES(tags),
+            similarity_text = VALUES(similarity_text),
+            source_record_json = VALUES(source_record_json),
+            update_time = VALUES(update_time)
+    </insert>
+
+    <select id="querySimilar" resultMap="OpsHistoricalIncidentMemoryMap">
+        SELECT id, memory_id, diagnosis_id, service_name, alert_rule, severity, symptom_summary,
+               evidence_summary, root_cause_category, root_cause_summary, remediation_summary,
+               confidence, review_status, time_window_json, tags, similarity_text, source_record_json,
+               create_time, update_time
+        FROM ops_historical_incident_memory
+        WHERE 1 = 1
+        <if test="serviceName != null and serviceName != ''">
+            AND service_name = #{serviceName}
+        </if>
+        <if test="keyword != null and keyword != ''">
+            AND (
+                similarity_text LIKE CONCAT('%', #{keyword}, '%')
+                OR alert_rule LIKE CONCAT('%', #{keyword}, '%')
+                OR root_cause_summary LIKE CONCAT('%', #{keyword}, '%')
+                OR tags LIKE CONCAT('%', #{keyword}, '%')
+            )
+        </if>
+        ORDER BY confidence DESC, create_time DESC
+        LIMIT #{limit}
+    </select>
+
+</mapper>
+

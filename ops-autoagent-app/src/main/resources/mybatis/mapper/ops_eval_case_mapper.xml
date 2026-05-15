@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.opsautoagent.infrastructure.dao.IOpsEvalCaseDao">
+
+    <resultMap id="OpsEvalCaseMap" type="com.opsautoagent.infrastructure.dao.po.OpsEvalCase">
+        <id column="id" property="id"/>
+        <result column="case_id" property="caseId"/>
+        <result column="case_name" property="caseName"/>
+        <result column="service_name" property="serviceName"/>
+        <result column="alert_payload_json" property="alertPayloadJson"/>
+        <result column="problem" property="problem"/>
+        <result column="expected_root_cause" property="expectedRootCause"/>
+        <result column="expected_evidence_types_json" property="expectedEvidenceTypesJson"/>
+        <result column="expected_tools_json" property="expectedToolsJson"/>
+        <result column="golden_summary" property="goldenSummary"/>
+        <result column="severity" property="severity"/>
+        <result column="tags" property="tags"/>
+        <result column="enabled" property="enabled"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <select id="queryEnabledCases" resultMap="OpsEvalCaseMap">
+        SELECT id, case_id, case_name, service_name, alert_payload_json, problem, expected_root_cause,
+               expected_evidence_types_json, expected_tools_json, golden_summary, severity, tags, enabled,
+               create_time, update_time
+        FROM ops_eval_case
+        WHERE enabled = 1
+        ORDER BY id ASC
+    </select>
+
+    <select id="queryEnabledCaseByCaseId" parameterType="java.lang.String" resultMap="OpsEvalCaseMap">
+        SELECT id, case_id, case_name, service_name, alert_payload_json, problem, expected_root_cause,
+               expected_evidence_types_json, expected_tools_json, golden_summary, severity, tags, enabled,
+               create_time, update_time
+        FROM ops_eval_case
+        WHERE enabled = 1 AND case_id = #{caseId}
+    </select>
+
+</mapper>
+

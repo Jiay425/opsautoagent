@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.opsautoagent.infrastructure.dao.IOpsDiagnosisDispatchDao">
+
+    <resultMap id="OpsDiagnosisDispatchMap" type="com.opsautoagent.infrastructure.dao.po.OpsDiagnosisDispatch">
+        <id column="id" property="id"/>
+        <result column="dispatch_id" property="dispatchId"/>
+        <result column="event_id" property="eventId"/>
+        <result column="diagnosis_id" property="diagnosisId"/>
+        <result column="service_name" property="serviceName"/>
+        <result column="dedup_key" property="dedupKey"/>
+        <result column="dispatch_status" property="dispatchStatus"/>
+        <result column="skip_reason" property="skipReason"/>
+        <result column="create_time" property="createTime"/>
+        <result column="start_time" property="startTime"/>
+        <result column="end_time" property="endTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.opsautoagent.infrastructure.dao.po.OpsDiagnosisDispatch" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO ops_diagnosis_dispatch (
+            dispatch_id, event_id, diagnosis_id, service_name, dedup_key, dispatch_status, skip_reason,
+            create_time, start_time, end_time, update_time
+        ) VALUES (
+            #{dispatchId}, #{eventId}, #{diagnosisId}, #{serviceName}, #{dedupKey}, #{dispatchStatus}, #{skipReason},
+            #{createTime}, #{startTime}, #{endTime}, #{updateTime}
+        )
+    </insert>
+
+    <update id="updateByDispatchId" parameterType="com.opsautoagent.infrastructure.dao.po.OpsDiagnosisDispatch">
+        UPDATE ops_diagnosis_dispatch
+        <set>
+            <if test="diagnosisId != null">diagnosis_id = #{diagnosisId},</if>
+            <if test="dispatchStatus != null">dispatch_status = #{dispatchStatus},</if>
+            <if test="skipReason != null">skip_reason = #{skipReason},</if>
+            <if test="startTime != null">start_time = #{startTime},</if>
+            <if test="endTime != null">end_time = #{endTime},</if>
+            <if test="updateTime != null">update_time = #{updateTime},</if>
+        </set>
+        WHERE dispatch_id = #{dispatchId}
+    </update>
+
+    <select id="queryLatestByDedupKey" parameterType="java.lang.String" resultMap="OpsDiagnosisDispatchMap">
+        SELECT id, dispatch_id, event_id, diagnosis_id, service_name, dedup_key, dispatch_status, skip_reason,
+               create_time, start_time, end_time, update_time
+        FROM ops_diagnosis_dispatch
+        WHERE dedup_key = #{dedupKey}
+        ORDER BY create_time DESC
+        LIMIT 1
+    </select>
+
+    <select id="queryRunningByServiceName" parameterType="java.lang.String" resultMap="OpsDiagnosisDispatchMap">
+        SELECT id, dispatch_id, event_id, diagnosis_id, service_name, dedup_key, dispatch_status, skip_reason,
+               create_time, start_time, end_time, update_time
+        FROM ops_diagnosis_dispatch
+        WHERE service_name = #{serviceName}
+          AND dispatch_status = 'RUNNING'
+        ORDER BY start_time DESC, create_time DESC
+        LIMIT 1
+    </select>
+
+</mapper>
+

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.opsautoagent.infrastructure.dao.IOpsServiceOwnerDao">
+
+    <resultMap id="OpsServiceOwnerMap" type="com.opsautoagent.infrastructure.dao.po.OpsServiceOwner">
+        <id column="id" property="id"/>
+        <result column="service_name" property="serviceName"/>
+        <result column="owner_name" property="ownerName"/>
+        <result column="owner_email" property="ownerEmail"/>
+        <result column="owner_wecom" property="ownerWecom"/>
+        <result column="owner_dingtalk" property="ownerDingTalk"/>
+        <result column="backup_owner_email" property="backupOwnerEmail"/>
+        <result column="enabled" property="enabled"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <select id="queryByServiceName" parameterType="java.lang.String" resultMap="OpsServiceOwnerMap">
+        SELECT id, service_name, owner_name, owner_email, owner_wecom, owner_dingtalk, backup_owner_email, enabled,
+               create_time, update_time
+        FROM ops_service_owner
+        WHERE service_name = #{serviceName}
+        LIMIT 1
+    </select>
+
+</mapper>
+

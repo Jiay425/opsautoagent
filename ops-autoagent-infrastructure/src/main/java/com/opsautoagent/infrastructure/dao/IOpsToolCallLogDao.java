@@ -1,0 +1,12 @@
+package com.opsautoagent.infrastructure.dao;
+
+import com.opsautoagent.infrastructure.dao.po.OpsToolCallLog;
+import org.apache.ibatis.annotations.Mapper;
+
+@Mapper
+public interface IOpsToolCallLogDao {
+
+    int insert(OpsToolCallLog opsToolCallLog);
+
+}
+

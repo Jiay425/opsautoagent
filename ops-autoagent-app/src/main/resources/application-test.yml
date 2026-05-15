@@ -1,0 +1,66 @@
+server:
+  port: 8091
+
+# 线程池配置
+thread:
+  pool:
+    executor:
+      config:
+        core-pool-size: 20
+        max-pool-size: 50
+        keep-alive-time: 5000
+        block-queue-size: 5000
+        policy: CallerRunsPolicy
+
+# 简化配置，禁用数据库自动配置
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
+      - org.mybatis.spring.boot.autoconfigure.MybatisAutoConfiguration
+  ai:
+    openai:
+      base-url: https://apis.itedus.cn
+      api-key: ${OPENAI_API_KEY:}
+    agent:
+      auto-config:
+        enabled: false
+
+# 日志
+logging:
+  level:
+    root: info
+    com.opsautoagent: debug
+  config: classpath:logback-spring.xml
+
+# 智能运维诊断外部系统配置；为空时会跳过真实查询并返回可解释占位证据
+ops:
+  security:
+    # Enable this in production-like environments and pass X-Ops-Token in requests.
+    enabled: false
+    api-token:
+  rate-limit:
+    enabled: true
+    max-requests: 20
+    window-seconds: 60
+  runbook:
+    base-path: docs/dev-ops/runbook
+  integrations:
+    http:
+      connect-timeout-seconds: 5
+      request-timeout-seconds: 15
+    prometheus:
+      base-url:
+      username:
+      password:
+    elk:
+      base-url:
+      index-pattern: logs-*
+      username:
+      password:
+    skywalking:
+      graphql-url:
+      username:
+      password:
+

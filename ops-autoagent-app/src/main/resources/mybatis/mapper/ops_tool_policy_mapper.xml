@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.opsautoagent.infrastructure.dao.IOpsToolPolicyDao">
+
+    <resultMap id="OpsToolPolicyMap" type="com.opsautoagent.infrastructure.dao.po.OpsToolPolicy">
+        <id column="id" property="id"/>
+        <result column="tool_name" property="toolName"/>
+        <result column="agent_role" property="agentRole"/>
+        <result column="enabled" property="enabled"/>
+        <result column="max_calls_per_diagnosis" property="maxCallsPerDiagnosis"/>
+        <result column="timeout_seconds" property="timeoutSeconds"/>
+        <result column="required_severity" property="requiredSeverity"/>
+        <result column="allow_auto_execute" property="allowAutoExecute"/>
+        <result column="requires_approval" property="requiresApproval"/>
+        <result column="description" property="description"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <select id="queryByToolNameAndAgentRole" resultMap="OpsToolPolicyMap">
+        SELECT id, tool_name, agent_role, enabled, max_calls_per_diagnosis, timeout_seconds,
+               required_severity, allow_auto_execute, requires_approval, description,
+               create_time, update_time
+        FROM ops_tool_policy
+        WHERE tool_name = #{toolName}
+          AND (
+              agent_role = #{agentRole}
+              OR agent_role = '*'
+              OR agent_role = 'ALL'
+          )
+        ORDER BY
+          CASE
+            WHEN agent_role = #{agentRole} THEN 0
+            WHEN agent_role = '*' THEN 1
+            WHEN agent_role = 'ALL' THEN 2
+            ELSE 3
+          END ASC,
+          id ASC
+        LIMIT 1
+    </select>
+
+</mapper>
+

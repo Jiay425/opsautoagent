@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.opsautoagent.infrastructure.dao.IOpsIncidentDiagnosisDao">
+
+    <resultMap id="OpsIncidentDiagnosisMap" type="com.opsautoagent.infrastructure.dao.po.OpsIncidentDiagnosis">
+        <id column="id" property="id"/>
+        <result column="diagnosis_id" property="diagnosisId"/>
+        <result column="session_id" property="sessionId"/>
+        <result column="service_name" property="serviceName"/>
+        <result column="start_time" property="startTime"/>
+        <result column="end_time" property="endTime"/>
+        <result column="problem" property="problem"/>
+        <result column="trace_id" property="traceId"/>
+        <result column="status" property="status"/>
+        <result column="request_json" property="requestJson"/>
+        <result column="metric_evidence_json" property="metricEvidenceJson"/>
+        <result column="log_evidence_json" property="logEvidenceJson"/>
+        <result column="trace_evidence_json" property="traceEvidenceJson"/>
+        <result column="evidence_chain_json" property="evidenceChainJson"/>
+        <result column="runbook_json" property="runbookJson"/>
+        <result column="report" property="report"/>
+        <result column="error_message" property="errorMessage"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.opsautoagent.infrastructure.dao.po.OpsIncidentDiagnosis" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO ops_incident_diagnosis (
+            diagnosis_id, session_id, service_name, start_time, end_time, problem, trace_id, status,
+            request_json, metric_evidence_json, log_evidence_json, trace_evidence_json,
+            evidence_chain_json, runbook_json, report, error_message, create_time, update_time
+        ) VALUES (
+            #{diagnosisId}, #{sessionId}, #{serviceName}, #{startTime}, #{endTime}, #{problem}, #{traceId}, #{status},
+            #{requestJson}, #{metricEvidenceJson}, #{logEvidenceJson}, #{traceEvidenceJson},
+            #{evidenceChainJson}, #{runbookJson}, #{report}, #{errorMessage}, #{createTime}, #{updateTime}
+        )
+    </insert>
+
+    <select id="queryByDiagnosisId" parameterType="java.lang.String" resultMap="OpsIncidentDiagnosisMap">
+        SELECT id, diagnosis_id, session_id, service_name, start_time, end_time, problem, trace_id, status,
+               request_json, metric_evidence_json, log_evidence_json, trace_evidence_json,
+               evidence_chain_json, runbook_json, report, error_message, create_time, update_time
+        FROM ops_incident_diagnosis
+        WHERE diagnosis_id = #{diagnosisId}
+    </select>
+
+</mapper>
+

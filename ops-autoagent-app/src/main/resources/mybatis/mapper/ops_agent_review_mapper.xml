@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.opsautoagent.infrastructure.dao.IOpsAgentReviewDao">
+
+    <resultMap id="OpsAgentReviewMap" type="com.opsautoagent.infrastructure.dao.po.OpsAgentReview">
+        <id column="id" property="id"/>
+        <result column="review_id" property="reviewId"/>
+        <result column="diagnosis_id" property="diagnosisId"/>
+        <result column="state_id" property="stateId"/>
+        <result column="plan_id" property="planId"/>
+        <result column="round" property="round"/>
+        <result column="review_status" property="reviewStatus"/>
+        <result column="sufficient" property="sufficient"/>
+        <result column="confidence" property="confidence"/>
+        <result column="confirmed_facts_json" property="confirmedFactsJson"/>
+        <result column="weak_evidence_json" property="weakEvidenceJson"/>
+        <result column="missing_evidence_json" property="missingEvidenceJson"/>
+        <result column="next_actions_json" property="nextActionsJson"/>
+        <result column="report_constraints_json" property="reportConstraintsJson"/>
+        <result column="stop_reason" property="stopReason"/>
+        <result column="reviewer_type" property="reviewerType"/>
+        <result column="review_json" property="reviewJson"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.opsautoagent.infrastructure.dao.po.OpsAgentReview" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO ops_agent_review (
+            review_id, diagnosis_id, state_id, plan_id, round, review_status, sufficient, confidence,
+            confirmed_facts_json, weak_evidence_json, missing_evidence_json, next_actions_json,
+            report_constraints_json, stop_reason, reviewer_type, review_json, create_time, update_time
+        ) VALUES (
+            #{reviewId}, #{diagnosisId}, #{stateId}, #{planId}, #{round}, #{reviewStatus}, #{sufficient}, #{confidence},
+            #{confirmedFactsJson}, #{weakEvidenceJson}, #{missingEvidenceJson}, #{nextActionsJson},
+            #{reportConstraintsJson}, #{stopReason}, #{reviewerType}, #{reviewJson}, #{createTime}, #{updateTime}
+        )
+    </insert>
+
+</mapper>
+

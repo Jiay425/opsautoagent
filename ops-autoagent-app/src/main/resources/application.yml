@@ -1,0 +1,6 @@
+spring:
+  config:
+    name: ops-autoagent-app
+  profiles:
+    active: full
+
