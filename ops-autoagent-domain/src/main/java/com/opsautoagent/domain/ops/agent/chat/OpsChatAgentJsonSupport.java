@@ -13,7 +13,70 @@ public final class OpsChatAgentJsonSupport {
         if (isBlank(json)) {
             throw new IllegalArgumentException("Chat Agent output is blank or does not contain a JSON object.");
         }
-        return JSON.parseObject(json);
+        try {
+            return JSON.parseObject(json);
+        } catch (Exception e) {
+            String repaired = repairLlmJson(json);
+            if (repaired != null && !repaired.equals(json)) {
+                try {
+                    return JSON.parseObject(repaired);
+                } catch (Exception ignored) {
+                }
+            }
+            throw e;
+        }
+    }
+
+    private static String repairLlmJson(String json) {
+        StringBuilder result = new StringBuilder();
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = 0; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (escaped) {
+                result.append(c);
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                result.append(c);
+                escaped = true;
+                continue;
+            }
+            if (c == '"') {
+                if (inString && isLikelyInnerQuote(json, i)) {
+                    result.append("\\\"");
+                    continue;
+                }
+                inString = !inString;
+                result.append(c);
+                continue;
+            }
+            if (inString) {
+                switch (c) {
+                    case '\n' -> result.append("\\n");
+                    case '\r' -> result.append("\\r");
+                    case '\t' -> result.append("\\t");
+                    case '\b' -> result.append("\\b");
+                    case '\f' -> result.append("\\f");
+                    default -> result.append(c);
+                }
+            } else {
+                result.append(c);
+            }
+        }
+        return result.toString();
+    }
+
+    private static boolean isLikelyInnerQuote(String json, int quoteIndex) {
+        for (int j = quoteIndex + 1; j < json.length(); j++) {
+            char next = json.charAt(j);
+            if (next == ' ' || next == '\t' || next == '\n' || next == '\r') {
+                continue;
+            }
+            return next != ':' && next != ',' && next != '}' && next != ']';
+        }
+        return false;
     }
 
     public static String extractJsonObject(String content) {

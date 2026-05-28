@@ -1,6 +1,7 @@
 package com.opsautoagent.domain.ops.service.dispatch;
 
 import com.opsautoagent.domain.ops.adapter.repository.IOpsAlertRepository;
+import com.opsautoagent.domain.codeops.service.CodeOpsAlertTriggerService;
 import com.opsautoagent.domain.ops.agent.OpsAgentBootstrapService;
 import com.opsautoagent.domain.ops.model.entity.IncidentCommandEntity;
 import com.opsautoagent.domain.ops.model.entity.OpsAlertEventEntity;
@@ -31,6 +32,9 @@ public class OpsDiagnosisDispatchService {
     @Resource
     private OpsAgentBootstrapService opsAgentBootstrapService;
 
+    @Resource
+    private CodeOpsAlertTriggerService codeOpsAlertTriggerService;
+
     public boolean acceptAlertEvent(OpsAlertEventEntity alertEvent) {
         opsAlertRepository.saveAlertEvent(alertEvent);
 
@@ -54,6 +58,7 @@ public class OpsDiagnosisDispatchService {
         opsAlertRepository.saveDiagnosisDispatch(dispatch);
         opsAgentBootstrapService.initialize(alertEvent, dispatch, command);
         opsDiagnosisJobExecutor.submit(alertEvent, dispatch, command);
+        codeOpsAlertTriggerService.submitIncidentToFix(alertEvent, command);
         return true;
     }
 

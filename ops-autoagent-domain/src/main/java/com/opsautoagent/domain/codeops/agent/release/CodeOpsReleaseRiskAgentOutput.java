@@ -1,0 +1,50 @@
+package com.opsautoagent.domain.codeops.agent.release;
+
+import com.opsautoagent.domain.codeops.model.entity.ReleaseRiskReportEntity;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+@Data
+@Builder
+@AllArgsConstructor
+@NoArgsConstructor
+public class CodeOpsReleaseRiskAgentOutput {
+
+    private boolean success;
+
+    private boolean fallback;
+
+    private ReleaseRiskReportEntity report;
+
+    private List<String> reasoning;
+
+    private List<String> humanApprovalPoints;
+
+    private String rawContent;
+
+    private String errorMessage;
+
+    private Long costMillis;
+
+    private LocalDateTime createTime;
+
+    public static CodeOpsReleaseRiskAgentOutput unavailable(String reason, ReleaseRiskReportEntity baselineReport) {
+        return CodeOpsReleaseRiskAgentOutput.builder()
+                .success(false)
+                .fallback(true)
+                .report(baselineReport)
+                .reasoning(List.of())
+                .humanApprovalPoints(List.of(reason))
+                .rawContent("")
+                .errorMessage(reason)
+                .costMillis(0L)
+                .createTime(LocalDateTime.now())
+                .build();
+    }
+
+}
