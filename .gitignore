@@ -1,47 +1,23 @@
-target/
-!.mvn/wrapper/maven-wrapper.jar
-!**/src/main/**/target/
-!**/src/test/**/target/
+# Claude Code settings (may contain local config, model prefs)
+.claude/
 
-### IntelliJ IDEA ###
-.idea/modules.xml
-.idea/jarRepositories.xml
-.idea/compiler.xml
-.idea/libraries/
-*.iws
+# Personal documents
+*.docx
+*.pdf
+resume_*
+
+# Debug / temp scripts
+parse_trace.py
+
+# Planning docs (not production code)
+docs/codeops-agent-upgrade-handoff.md
+docs/codeops-agent-upgrade-plan.md
+docs/codeops-incident-to-fix-demo.md
+
+# Generated eval reports
+data/codeops-eval/
+
+# IDE
+.idea/
 *.iml
-*.ipr
-
-### Eclipse ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
-
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
-/dist/
-/nbdist/
-/.nb-gradle/
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
-
-### VS Code ###
 .vscode/
-
-### Mac OS ###
-.DS_Store
-/.idea/
-/.run/
-/ops-autoagent-app/data/
-/data/
-/runtime-validation-app.*.log
-/mvn-compile.log
-*.log
-*.tmp
-

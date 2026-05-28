@@ -57,10 +57,17 @@ public class SkyWalkingTraceGateway extends AbstractOpsHttpGateway implements IO
             runQuery(command, "trace_detail", buildTraceDetailQuery(command.getTraceId()), spans, rawData);
         }
 
-        String serviceId = resolveServiceId(command, spans, rawData);
-        runQuery(command, "service_metrics", buildServiceMetricsQuery(command), spans, rawData);
-        runQuery(command, "error_trace_samples", buildBasicTraceQuery(command, serviceId, "ERROR", "BY_START_TIME"), spans, rawData);
-        runQuery(command, "slow_trace_samples", buildBasicTraceQuery(command, serviceId, "ALL", "BY_DURATION"), spans, rawData);
+        if (isBlank(command.getServiceName())) {
+            saveToolCallLog("skywalking", command.getSessionId(), command.getDiagnosisId(), graphqlUrl,
+                    "serviceName is blank", "service queries skipped", null, 0L, false,
+                    "serviceName is blank");
+            spans.add("serviceName is not provided; service-specific queries (service metadata, metrics, error trace samples, slow trace samples) are skipped.");
+        } else {
+            String serviceId = resolveServiceId(command, spans, rawData);
+            runQuery(command, "service_metrics", buildServiceMetricsQuery(command), spans, rawData);
+            runQuery(command, "error_trace_samples", buildBasicTraceQuery(command, serviceId, "ERROR", "BY_START_TIME"), spans, rawData);
+            runQuery(command, "slow_trace_samples", buildBasicTraceQuery(command, serviceId, "ALL", "BY_DURATION"), spans, rawData);
+        }
 
         return TraceEvidenceEntity.builder()
                 .source("skywalking")
