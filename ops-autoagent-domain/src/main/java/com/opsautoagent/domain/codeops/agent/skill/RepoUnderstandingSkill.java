@@ -49,7 +49,15 @@ public class RepoUnderstandingSkill implements EngineeringSkill {
         RepoDiffContextEntity diffContext = toolGateway.loadDiffContext(task.getRepository(), task.getChangeRef(), task.getContext());
         String changeRef = value(diffContext.getChangeRef(), "working_tree");
         List<String> codeHints = extractCodeHints(task);
+        if (codeHints.isEmpty()) {
+            codeHints = extractKeywordsFromGoal(task.getGoal());
+        }
         List<String> codeSearchMatches = toolGateway.searchCode(task.getRepository(), codeHints, 30);
+        if (codeSearchMatches.isEmpty() && !codeHints.isEmpty()) {
+            codeSearchMatches = toolGateway.searchCode(task.getRepository(),
+                    codeHints.stream().map(h -> h.replace("Exception", "")
+                            .replace("Service", "").replace("Controller", "")).toList(), 20);
+        }
         List<CodeSnippetEntity> codeSnippets = loadSnippets(task, codeSearchMatches);
         CodeLocalizationAgentOutput localization = codeLocalizationAgentService.localize(CodeLocalizationAgentInput.builder()
                 .taskId(task.getTaskId())
@@ -234,6 +242,16 @@ public class RepoUnderstandingSkill implements EngineeringSkill {
             return "无";
         }
         return String.join(", ", values);
+    }
+
+    private List<String> extractKeywordsFromGoal(String goal) {
+        if (goal == null || goal.isBlank()) return List.of();
+        List<String> keywords = new ArrayList<>();
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("([A-Z][a-zA-Z0-9_]*(?:Service|Controller|Repository|Exception|Error))")
+                .matcher(goal);
+        while (m.find()) keywords.add(m.group(1));
+        return keywords;
     }
 
     private record MatchLocation(String filePath, int lineNumber) {

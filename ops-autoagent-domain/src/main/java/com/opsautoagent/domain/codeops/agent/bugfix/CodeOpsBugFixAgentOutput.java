@@ -52,6 +52,8 @@ public class CodeOpsBugFixAgentOutput {
 
     private LocalDateTime createTime;
 
+    private Map<String, Object> modelRouting;
+
     public static CodeOpsBugFixAgentOutput unavailable(String reason) {
         return CodeOpsBugFixAgentOutput.builder()
                 .success(false)

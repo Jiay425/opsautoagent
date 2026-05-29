@@ -6,6 +6,7 @@ import com.opsautoagent.api.dto.OpsAlertWebhookRequestDTO;
 import com.opsautoagent.api.response.Response;
 import com.opsautoagent.domain.ops.model.valobj.alert.OpsAlertIngestResult;
 import com.opsautoagent.domain.ops.service.OpsSensitiveDataMasker;
+import com.opsautoagent.domain.codeops.agent.scheduler.IncidentScheduler;
 import com.opsautoagent.domain.ops.service.alert.OpsAlertIngestService;
 import com.opsautoagent.types.enums.ResponseCode;
 import com.alibaba.fastjson.JSON;
@@ -17,6 +18,7 @@ import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 
 import jakarta.annotation.Resource;
+import java.util.Map;
 import java.util.UUID;
 
 @Slf4j
@@ -33,6 +35,9 @@ public class OpsAlertWebhookController implements IOpsAlertWebhookService {
 
     @Resource
     private OpsSensitiveDataMasker sensitiveDataMasker;
+
+    @Resource
+    private IncidentScheduler incidentScheduler;
 
     @Override
     @RequestMapping(value = "/alertmanager", method = RequestMethod.POST)
@@ -57,6 +62,26 @@ public class OpsAlertWebhookController implements IOpsAlertWebhookService {
                 sessionId, sensitiveDataMasker.mask(JSON.toJSONString(request)));
 
         OpsAlertIngestResult result = opsAlertIngestService.ingestAlertmanager(request);
+
+        // Route to scheduler for dedup + queueing (non-blocking, no impact on webhook response)
+        if (request.getAlerts() != null) {
+            for (var alert : request.getAlerts()) {
+                try {
+                    Map<String, String> labels = alert.getLabels() != null ? alert.getLabels() : Map.of();
+                    Map<String, String> annotations = alert.getAnnotations() != null ? alert.getAnnotations() : Map.of();
+                    incidentScheduler.ingest(
+                            alert.getFingerprint(),
+                            labels.getOrDefault("alertname", "unknown"),
+                            labels.getOrDefault("service", "unknown"),
+                            labels.getOrDefault("severity", "warning"),
+                            annotations.getOrDefault("summary", annotations.getOrDefault("description", "")),
+                            labels.getOrDefault("endpoint", "")
+                    );
+                } catch (Exception ignored) {
+                }
+            }
+        }
+
         return Response.<OpsAlertWebhookAcceptDTO>builder()
                 .code(ResponseCode.SUCCESS.getCode())
                 .info(ResponseCode.SUCCESS.getInfo())

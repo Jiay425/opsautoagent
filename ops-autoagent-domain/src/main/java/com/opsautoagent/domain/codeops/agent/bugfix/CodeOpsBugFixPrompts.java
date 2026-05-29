@@ -7,7 +7,64 @@ public final class CodeOpsBugFixPrompts {
     private CodeOpsBugFixPrompts() {
     }
 
+    /**
+     * Build a prominent, hard-to-miss reflection block that appears BEFORE the JSON input.
+     * LLMs give more attention to plain text at the top than to fields buried in JSON.
+     */
+    private static String buildReflectionBlock(CodeOpsBugFixAgentInput input) {
+        if (input == null || input.getReflectionDiagnostics() == null
+                || input.getReflectionDiagnostics().isEmpty()) {
+            return "";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n!!! REFLECTION ROUND — PREVIOUS ATTEMPT(S) FAILED !!!\n");
+        sb.append("The following failures occurred. Your new patch MUST fix them.\n\n");
+
+        int roundNum = 1;
+        for (Object diag : input.getReflectionDiagnostics()) {
+            if (!(diag instanceof java.util.Map<?, ?> m)) continue;
+
+            Object ft = m.get("failureType");
+            String failureType = ft != null ? String.valueOf(ft) : "UNKNOWN";
+            sb.append("  Round ").append(roundNum).append(" FAILED: ").append(failureType).append("\n");
+
+            Object mustFix = m.get("mustFix");
+            if (mustFix instanceof java.util.List<?> mfl) {
+                for (Object item : mfl) {
+                    sb.append("    MUST FIX: ").append(item).append("\n");
+                }
+            }
+
+            Object mustAvoid = m.get("mustAvoid");
+            if (mustAvoid instanceof java.util.List<?> mal) {
+                for (Object item : mal) {
+                    sb.append("    MUST AVOID: ").append(item).append("\n");
+                }
+            }
+
+            Object constraints = m.get("nextAttemptConstraints");
+            if (constraints instanceof java.util.List<?> cl) {
+                for (Object item : cl) {
+                    sb.append("    CONSTRAINT: ").append(item).append("\n");
+                }
+            }
+
+            Object repairScope = m.get("repairScope");
+            if (repairScope instanceof java.util.Map<?, ?> rs) {
+                sb.append("    SCOPE: ").append(rs.get("scopeType"))
+                        .append(", methods: ").append(rs.get("targetMethods")).append("\n");
+            }
+
+            roundNum++;
+        }
+
+        sb.append("\n!!! END REFLECTION — GENERATE A DIFFERENT PATCH !!!\n");
+        return sb.toString();
+    }
+
     public static String buildPrompt(CodeOpsBugFixAgentInput input) {
+        String reflectionBlock = buildReflectionBlock(input);
         return String.format("""
                 You are a senior Java backend incident-fix agent.
 
@@ -17,6 +74,10 @@ public final class CodeOpsBugFixPrompts {
                 Important rules:
                 - Output only JSON.
                 - Ground every claim in the provided opsDiagnosis, codeSearchMatches, codeSnippets, or knowledgeMatches.
+                - If memoryHints is not empty, treat them as REFERENCE ONLY — they describe what worked for similar past incidents.
+                  Use them only if they are consistent with current evidence, repairScope and visible code.
+                  Never override current incident evidence with memory.
+                  Memory hints are suggestions, not facts.
                 - Do not invent files, methods, fields, dependencies, APIs, metrics, logs, or line numbers not present in the input.
                 - CRITICAL — READ repairScope IN THE INPUT BELOW: It tells you exactly which methods to fix and how. Follow the scopeType rules strictly.
                   * STRICT_SINGLE_METHOD: Fix ONLY the listed targetMethods. All other methods in the same file MUST be preserved byte-for-byte from codeSnippets. Do NOT fix null-check gaps, race conditions, or code smells in non-target methods — the patch will be rejected.
@@ -104,9 +165,11 @@ public final class CodeOpsBugFixPrompts {
                   "riskNotes": ["string"]
                 }
 
+                %s
+
                 Incident fix input:
                 %s
-                """, JSON.toJSONString(input));
+                """, reflectionBlock, JSON.toJSONString(input));
     }
 
 }

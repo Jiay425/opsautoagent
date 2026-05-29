@@ -3,7 +3,10 @@ package com.opsautoagent.domain.codeops.agent.skill;
 import com.opsautoagent.domain.codeops.agent.bugfix.CodeOpsBugFixAgentInput;
 import com.opsautoagent.domain.codeops.agent.bugfix.CodeOpsBugFixAgentOutput;
 import com.opsautoagent.domain.codeops.agent.bugfix.CodeOpsBugFixAgentService;
+import com.opsautoagent.domain.codeops.agent.memory.IncidentMemoryService;
 import com.opsautoagent.domain.codeops.agent.patch.PatchApplyResult;
+import com.opsautoagent.domain.codeops.agent.security.AgentPermissionPolicy;
+import com.opsautoagent.domain.codeops.agent.security.HumanApprovalGate;
 import com.opsautoagent.domain.codeops.agent.patch.PatchApplyService;
 import com.opsautoagent.domain.codeops.agent.patch.FileRewritePatchEntity;
 import com.opsautoagent.domain.codeops.agent.patch.PatchScopeGuardResult;
@@ -51,6 +54,10 @@ public class BugFixSkill implements EngineeringSkill {
 
     private final PatchScopeGuardService patchScopeGuardService;
 
+    private final IncidentMemoryService incidentMemoryService;
+    private final AgentPermissionPolicy permissionPolicy;
+    private final HumanApprovalGate humanApprovalGate;
+
     @Value("${codeops.bugfix.compile-timeout-ms:300000}")
     private long compileTimeoutMs;
 
@@ -58,12 +65,18 @@ public class BugFixSkill implements EngineeringSkill {
                        CodeOpsBugFixAgentService bugFixAgentService,
                        PatchValidationService patchValidationService,
                        PatchApplyService patchApplyService,
-                       PatchScopeGuardService patchScopeGuardService) {
+                       PatchScopeGuardService patchScopeGuardService,
+                       IncidentMemoryService incidentMemoryService,
+                       AgentPermissionPolicy permissionPolicy,
+                       HumanApprovalGate humanApprovalGate) {
         this.toolGateway = toolGateway;
         this.bugFixAgentService = bugFixAgentService;
         this.patchValidationService = patchValidationService;
         this.patchApplyService = patchApplyService;
         this.patchScopeGuardService = patchScopeGuardService;
+        this.incidentMemoryService = incidentMemoryService;
+        this.permissionPolicy = permissionPolicy;
+        this.humanApprovalGate = humanApprovalGate;
     }
 
     @Override
@@ -110,6 +123,15 @@ public class BugFixSkill implements EngineeringSkill {
                     .build();
         }
 
+        // Recall similar incident patterns from multi-layer memory
+        List<String> memoryKeywords = extractMemoryKeywords(task.getGoal(), diagnosisClues, suspiciousLocations);
+        String memoryPrompt = incidentMemoryService.buildMemoryPrompt(memoryKeywords);
+        List<Map<String, Object>> memoryHints = List.of();
+        if (!memoryPrompt.isBlank()) {
+            // Inject as additional diagnosis clue so LLM sees AVOID hints
+            diagnosisClues = appendMemoryToClues(diagnosisClues, memoryPrompt);
+        }
+
         CodeOpsBugFixAgentOutput llmFix = bugFixAgentService.proposeFix(CodeOpsBugFixAgentInput.builder()
                 .taskId(task.getTaskId())
                 .taskType(task.getTaskType())
@@ -120,6 +142,7 @@ public class BugFixSkill implements EngineeringSkill {
                 .diagnosisClues(diagnosisClues)
                 .suspiciousLocations(suspiciousLocations)
                 .repairScope(repairScope)
+                .memoryHints(memoryHints)
                 .codeSearchMatches(extractCodeSearchMatches(task))
                 .codeSnippets(codeSnippets)
                 .knowledgeMatches(extractKnowledgeMatches(task))
@@ -254,6 +277,11 @@ public class BugFixSkill implements EngineeringSkill {
         output.put("rootCause", suggestion.getRootCause());
         output.put("confidence", suggestion.getConfidence());
         output.put("reflectionDiagnosis", llmFix == null || llmFix.getReflectionDiagnosis() == null ? Map.of() : llmFix.getReflectionDiagnosis());
+        output.put("modelRouting", llmFix == null || llmFix.getModelRouting() == null ? Map.of() : llmFix.getModelRouting());
+        // Permission policy
+        AgentPermissionPolicy.PolicyDecision policy = permissionPolicy.evaluate(
+                suggestion.getRepositoryPath(), task.getTaskType(), "MEDIUM");
+        output.put("permissionPolicy", policy.toMap());
         output.put("llmGenerated", suggestion.getLlmGenerated());
         output.put("llmErrorMessage", suggestion.getLlmErrorMessage());
         output.put("testSuggestions", llmFix == null || llmFix.getTestSuggestions() == null ? List.of() : llmFix.getTestSuggestions());
@@ -1394,6 +1422,51 @@ public class BugFixSkill implements EngineeringSkill {
             return null;
         }
         return cleaned.substring(0, javaIdx + 5);
+    }
+
+    private List<String> extractMemoryKeywords(String goal, List<String> diagnosisClues, List<String> suspiciousLocations) {
+        List<String> keywords = new ArrayList<>();
+        String text = (goal == null ? "" : goal) + " " + String.join(" ", list(diagnosisClues))
+                + " " + String.join(" ", list(suspiciousLocations));
+        String lower = text.toLowerCase();
+
+        // 1. Static technical terms
+        for (String term : List.of("NullPointerException", "NPE", "IllegalArgumentException",
+                "concurrency", "race", "deadlock", "idempotent", "timeout",
+                "connection pool", "Hikari", "GC", "heap", "synchronized",
+                "InventoryService", "OrderSubmitService", "IdempotencyService")) {
+            if (lower.contains(term.toLowerCase())) keywords.add(term);
+        }
+
+        // 2. Extract exception class names dynamically: "java.lang.NullPointerException" → "NullPointerException"
+        java.util.regex.Matcher exMatcher = java.util.regex.Pattern
+                .compile("(\\w+Exception|\\w+Error)(?:\\.java)?")
+                .matcher(text);
+        while (exMatcher.find()) {
+            String ex = exMatcher.group(1);
+            if (!keywords.contains(ex)) keywords.add(ex);
+        }
+
+        // 3. Extract class names from suspiciousLocations: "OrderSubmitService.submit(...)" → "OrderSubmitService"
+        java.util.regex.Matcher clsMatcher = java.util.regex.Pattern
+                .compile("([A-Z][a-zA-Z0-9_]*)\\.([a-zA-Z_][a-zA-Z0-9_]*)\\(")
+                .matcher(text);
+        while (clsMatcher.find()) {
+            String cls = clsMatcher.group(1);
+            String method = clsMatcher.group(2);
+            if (!keywords.contains(cls)) keywords.add(cls);
+            if (!keywords.contains(method)) keywords.add(method);
+        }
+
+        return keywords;
+    }
+
+    private List<String> appendMemoryToClues(List<String> diagnosisClues, String memoryPrompt) {
+        List<String> clues = new ArrayList<>(diagnosisClues == null ? List.of() : diagnosisClues);
+        clues.add("=== INCIDENT MEMORY RECALL ===");
+        clues.add(memoryPrompt);
+        clues.add("=== END MEMORY RECALL ===");
+        return clues;
     }
 
     private String extractMethodFromLocation(String location) {

@@ -10,6 +10,10 @@ import com.opsautoagent.domain.codeops.model.entity.EngineeringSkillResultEntity
 import com.opsautoagent.domain.codeops.model.entity.EngineeringTaskEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringTaskStepEntity;
 import com.opsautoagent.domain.codeops.model.entity.IncidentFixWorkingMemory;
+import com.opsautoagent.domain.codeops.agent.compaction.ContextCompactionService;
+import com.opsautoagent.domain.codeops.agent.memory.IncidentMemoryService;
+import com.opsautoagent.domain.codeops.agent.recovery.ErrorRecoveryPolicy;
+import com.opsautoagent.domain.codeops.agent.recovery.RecoveryDecision;
 import com.alibaba.fastjson.JSON;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -38,14 +42,24 @@ public class EngineeringTaskAgentService {
 
     private final EngineeringToolGateway toolGateway;
 
+    private final ContextCompactionService compactionService;
+    private final ErrorRecoveryPolicy recoveryPolicy;
+    private final IncidentMemoryService incidentMemoryService;
+
     private final ConcurrentMap<String, EngineeringTaskEntity> taskStore = new ConcurrentHashMap<>();
 
     public EngineeringTaskAgentService(EngineeringSkillRegistry skillRegistry,
                                        IncidentFixOrchestratorPolicy orchestratorPolicy,
-                                       EngineeringToolGateway toolGateway) {
+                                       EngineeringToolGateway toolGateway,
+                                       ContextCompactionService compactionService,
+                                       ErrorRecoveryPolicy recoveryPolicy,
+                                       IncidentMemoryService incidentMemoryService) {
         this.skillRegistry = skillRegistry;
         this.orchestratorPolicy = orchestratorPolicy;
         this.toolGateway = toolGateway;
+        this.compactionService = compactionService;
+        this.recoveryPolicy = recoveryPolicy;
+        this.incidentMemoryService = incidentMemoryService;
     }
 
     public EngineeringTaskEntity submit(EngineeringTaskEntity request) {
@@ -194,6 +208,15 @@ public class EngineeringTaskAgentService {
             return;
         }
         int reflectionRound = integerValue(context.get("incidentFixReflectionRound"));
+        int maxRounds = resolveMaxReflectionRounds(context);
+
+        // Adaptive cap: STRICT_SINGLE_METHOD = 1 round, others = 3
+        boolean isLastRound = reflectionRound + 1 >= maxRounds;
+        if (isLastRound) {
+            context.put("incidentFixReflectionExhausted", true);
+            context.put("incidentFixReflectionMaxRounds", maxRounds);
+        }
+
         Map<String, Object> failure = new LinkedHashMap<>();
         failure.put("round", reflectionRound + 1);
         failure.put("failedSkill", skillId);
@@ -213,15 +236,34 @@ public class EngineeringTaskAgentService {
         context.put("incidentFixReflectionDiagnostics", extractDiagnostics(failures));
         context.put("incidentFixReflectionRound", reflectionRound + 1);
 
-        if (reflectionRound + 1 >= MAX_REFLECTION_ROUNDS) {
+        // Circuit breaker: detect LLM hallucination loop (same patch generated again)
+        String currentPatchHash = extractPatchHash(result);
+        String previousPatchHash = context.get("incidentFixLastPatchHash") instanceof String s ? s : "";
+        if (currentPatchHash != null && currentPatchHash.equals(previousPatchHash)) {
+            log.warn("Hallucination loop detected: same patch hash {} for round {}. Forcing exhaustion.",
+                    currentPatchHash, reflectionRound + 1);
             context.put("incidentFixReflectionExhausted", true);
+            context.put("incidentFixReflectionExhaustedReason",
+                    "Hallucination loop — identical patch generated for 2 consecutive rounds");
             return;
+        }
+        if (currentPatchHash != null) {
+            context.put("incidentFixLastPatchHash", currentPatchHash);
+            diagnostic.put("patchHash", currentPatchHash);
+        }
+
+        // Store failure pattern for future recall (even on last round)
+        storeFailureMemory(task, diagnostic, result);
+
+        if (isLastRound) {
+            return; // Don't clean up for another round — we're done
         }
 
         skillOutputs.remove("bug_fix");
         skillOutputs.remove("test_verification");
         skillOutputs.remove("release_risk_analysis");
-        context.put("skillOutputs", skillOutputs);
+        // Compact old outputs before next reflection round
+        context.put("skillOutputs", compactionService.compact(skillOutputs, reflectionRound));
         workingMemory.setPatchGeneration(new LinkedHashMap<>());
         workingMemory.setTestVerification(new LinkedHashMap<>());
         workingMemory.setReleaseRisk(new LinkedHashMap<>());
@@ -316,6 +358,8 @@ public class EngineeringTaskAgentService {
                 Object cgOut = cgMap.get("output");
                 String cgOutput = cgOut != null ? String.valueOf(cgOut) : "";
                 failedFiles.addAll(extractFilesFromText(cgOutput));
+                List<String> compileErrors = extractCompileErrors(cgOutput);
+                mustFix.addAll(compileErrors);
                 nextAttemptConstraints.add("Fix compiler errors first. Do not add new logic until compilation passes.");
             }
         }
@@ -356,6 +400,12 @@ public class EngineeringTaskAgentService {
         diagnostic.put("round", round);
         diagnostic.put("failedSkill", skillId);
         diagnostic.put("failureType", failureType);
+        // Extract model tier from rawOutput for flash failure counting
+        Object modelRouting = rawOutput.get("modelRouting");
+        if (modelRouting instanceof Map<?, ?> mr) {
+            diagnostic.put("model", mr.get("model"));
+            diagnostic.put("modelTier", mr.get("modelTier"));
+        }
         diagnostic.put("failedFiles", failedFiles.stream().distinct().toList());
         diagnostic.put("failedMethods", failedMethods.stream().distinct().toList());
         diagnostic.put("failedCommands", failedCommands.stream().distinct().toList());
@@ -416,6 +466,144 @@ public class EngineeringTaskAgentService {
             files.add(srcIndex >= 0 ? file.substring(srcIndex) : file);
         }
         return files.stream().distinct().toList();
+    }
+
+    /**
+     * Extract structured compile errors from Maven output.
+     * Pattern: [ERROR] /path/to/File.java:[line] error message
+     * Returns list of "File.java:123: error message" strings for reflection diagnostics.
+     */
+    private List<String> extractCompileErrors(String compileOutput) {
+        if (compileOutput == null || compileOutput.isBlank()) {
+            return List.of();
+        }
+        List<String> errors = new ArrayList<>();
+        // Match: [ERROR] /path/File.java:[line] message or [ERROR] /path/File.java:[line,column] message
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\\[ERROR\\]\\s+(.+?\\.java):\\[?(\\d+)(?:,\\d+)?\\]?\\s+(.+)")
+                .matcher(compileOutput);
+        while (m.find()) {
+            String file = m.group(1).replace('\\', '/');
+            int srcIdx = file.indexOf("src/");
+            if (srcIdx >= 0) file = file.substring(srcIdx);
+            int line = Integer.parseInt(m.group(2));
+            String message = m.group(3).trim();
+            errors.add(file + ":" + line + ": " + message);
+        }
+        return errors;
+    }
+
+    private int resolveMaxReflectionRounds(Map<String, Object> context) {
+        // Extract scopeType from the latest known repairScope in reflection diagnostics
+        Object diagnostics = context.get("incidentFixReflectionDiagnostics");
+        if (diagnostics instanceof List<?> list) {
+            for (Object d : list) {
+                if (d instanceof Map<?, ?> dm) {
+                    Object rs = dm.get("repairScope");
+                    if (rs instanceof Map<?, ?> rsm) {
+                        String scopeType = String.valueOf((rsm.get("scopeType") != null ? String.valueOf(rsm.get("scopeType")) : ""));
+                        if ("STRICT_SINGLE_METHOD".equals(scopeType)) return 1;
+                        if ("MULTI_METHOD".equals(scopeType)) return 3;
+                        if ("FULL_FILE".equals(scopeType)) return 3;
+                    }
+                }
+            }
+        }
+        // Also check skillOutputs for the latest bug_fix's repairScope
+        Object skillOutputs = context.get("skillOutputs");
+        if (skillOutputs instanceof Map<?, ?> outputs) {
+            Object bugFixOutput = outputs.get("bug_fix");
+            if (bugFixOutput instanceof Map<?, ?> bfo) {
+                Object raw = bfo.get("rawOutput");
+                if (raw instanceof Map<?, ?> rawMap) {
+                    Object guard = rawMap.get("patchScopeGuard");
+                    if (guard instanceof Map<?, ?> gm) {
+                        Object rs = gm.get("repairScope");
+                        if (rs instanceof Map<?, ?> rsm) {
+                            String scopeType = String.valueOf((rsm.get("scopeType") != null ? String.valueOf(rsm.get("scopeType")) : ""));
+                            if ("STRICT_SINGLE_METHOD".equals(scopeType)) return 1;
+                        }
+                    }
+                }
+            }
+        }
+        return 3; // default: max 3 rounds
+    }
+
+    @SuppressWarnings("unchecked")
+    private void storeFailureMemory(EngineeringTaskEntity task, Map<String, Object> diagnostic,
+                                     EngineeringSkillResultEntity result) {
+        try {
+            String failureType = String.valueOf(diagnostic.getOrDefault("failureType", "UNKNOWN"));
+            if ("UNKNOWN".equals(failureType)) return;
+
+            String caseName = task.getGoal() != null ? truncate(task.getGoal(), 80) : task.getTaskId();
+            String failedMethod = "";
+            String violation = "";
+            String scopeType = "";
+
+            // Extract scope from result rawOutput
+            Map<String, Object> rawOutput = result != null ? result.getRawOutput() : null;
+            if (rawOutput != null) {
+                Object guard = rawOutput.get("patchScopeGuard");
+                if (guard instanceof Map<?, ?> gm) {
+                    Object violations = gm.get("violations");
+                    if (violations instanceof List<?> vl && !vl.isEmpty()) {
+                        violation = vl.get(0).toString();
+                    }
+                    Object cm = gm.get("changedMethods");
+                    if (cm instanceof List<?> cml && !cml.isEmpty()) {
+                        failedMethod = String.join(", ", cml.stream().map(String::valueOf).toList());
+                    }
+                    Object rs = gm.get("repairScope");
+                    if (rs instanceof Map<?, ?> rsm) {
+                        Object st = rsm.get("scopeType");
+                        if (st != null) scopeType = String.valueOf(st);
+                    }
+                }
+            }
+
+            // Build violation description from mustFix/mustAvoid
+            if (violation.isEmpty()) {
+                Object mustFix = diagnostic.get("mustFix");
+                Object mustAvoid = diagnostic.get("mustAvoid");
+                if (mustFix instanceof List<?> mfl && !mfl.isEmpty()) {
+                    violation = String.join("; ", mfl.stream().map(String::valueOf).limit(2).toList());
+                } else if (mustAvoid instanceof List<?> mal && !mal.isEmpty()) {
+                    violation = "Must avoid: " + String.join("; ", mal.stream().map(String::valueOf).limit(2).toList());
+                }
+            }
+
+            incidentMemoryService.storeFailure(
+                    task.getTaskId(), caseName, failureType,
+                    truncate(failedMethod, 200), truncate(violation, 300), scopeType);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private String truncate(String value, int maxLen) {
+        if (value == null) return "";
+        return value.length() <= maxLen ? value : value.substring(0, maxLen) + "...";
+    }
+
+    /**
+     * Extract a hash of the patch content for detecting hallucination loops.
+     * Uses the patchDraft or unifiedDiffPatch from the raw output.
+     */
+    @SuppressWarnings("unchecked")
+    private String extractPatchHash(EngineeringSkillResultEntity result) {
+        if (result == null || result.getRawOutput() == null) return null;
+        Map<String, Object> raw = result.getRawOutput();
+        String patch = "";
+        Object draft = raw.get("patchDraft");
+        if (draft instanceof String s && !s.isBlank()) patch = s;
+        if (patch.isBlank()) {
+            Object udp = raw.get("unifiedDiffPatch");
+            if (udp instanceof String s && !s.isBlank()) patch = s;
+        }
+        if (patch.isBlank()) return null;
+        // Use a simple hash — enough to detect identical output
+        return Integer.toHexString(patch.hashCode());
     }
 
     private boolean isReflectableRepairSkill(String skillId) {

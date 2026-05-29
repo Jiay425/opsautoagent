@@ -2,6 +2,7 @@ package com.opsautoagent.domain.codeops.agent.eval;
 
 import com.opsautoagent.domain.codeops.model.entity.EngineeringTaskEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringTaskStepEntity;
+import com.opsautoagent.domain.codeops.agent.memory.IncidentMemoryService;
 import com.opsautoagent.domain.codeops.service.EngineeringTaskAgentService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -22,13 +23,16 @@ public class CodeOpsEvaluationService {
     private final EngineeringTaskAgentService engineeringTaskAgentService;
     private final CodeOpsEvalReportBuilder reportBuilder;
     private final CodeOpsReportMarkdownGenerator markdownGenerator;
+    private final IncidentMemoryService incidentMemoryService;
 
     public CodeOpsEvaluationService(EngineeringTaskAgentService engineeringTaskAgentService,
                                      CodeOpsEvalReportBuilder reportBuilder,
-                                     CodeOpsReportMarkdownGenerator markdownGenerator) {
+                                     CodeOpsReportMarkdownGenerator markdownGenerator,
+                                     IncidentMemoryService incidentMemoryService) {
         this.engineeringTaskAgentService = engineeringTaskAgentService;
         this.reportBuilder = reportBuilder;
         this.markdownGenerator = markdownGenerator;
+        this.incidentMemoryService = incidentMemoryService;
     }
 
     public CodeOpsEvalSummary runBuiltinCases() {
@@ -53,6 +57,10 @@ public class CodeOpsEvaluationService {
     private CodeOpsEvalRun runCase(String batchId, CodeOpsEvalCase evalCase) {
         String runId = "codeops-eval-run-" + UUID.randomUUID();
         long start = System.currentTimeMillis();
+
+        // Sandbox: restore sample repository to clean baseline before each case
+        restoreSampleBaseline(evalCase.getRepository());
+
         try {
             EngineeringTaskEntity task = engineeringTaskAgentService.submit(EngineeringTaskEntity.builder()
                     .taskType(evalCase.getTaskType())
@@ -162,6 +170,19 @@ public class CodeOpsEvaluationService {
                 && testCoverage.compareTo(BigDecimal.valueOf(0.5)) >= 0
                 && riskCoverage.compareTo(BigDecimal.valueOf(0.5)) >= 0;
 
+        // Store successful fix pattern to incident memory for future recall
+        if (success && evalCase != null && task != null) {
+            try {
+                MemoryExtraction mem = extractMemoryFromTask(task, evalCase);
+                incidentMemoryService.storeSuccess(
+                        evalCase.getCaseId(), evalCase.getCaseName(),
+                        mem.scopeType, mem.targetMethods,
+                        mem.rootCause, mem.fixStrategy, mem.riskLevel);
+            } catch (Exception ignored) {
+                log.debug("Failed to store incident memory: {}", ignored.getMessage());
+            }
+        }
+
         return CodeOpsEvalRun.builder()
                 .runId(runId)
                 .caseId(evalCase.getCaseId())
@@ -198,6 +219,40 @@ public class CodeOpsEvaluationService {
     }
 
     private CodeOpsEvalReport lastReport;
+
+    /**
+     * Restore sample repository files to clean git baseline before each eval case.
+     * This ensures consecutive cases don't interfere — each case starts from pristine code.
+     */
+    private void restoreSampleBaseline(String repository) {
+        if (repository == null || repository.isBlank()) return;
+        try {
+            java.nio.file.Path repoPath = java.nio.file.Path.of(repository).toAbsolutePath().normalize();
+            if (!java.nio.file.Files.exists(repoPath)) return;
+
+            ProcessBuilder pb = new ProcessBuilder("git", "checkout", "--", ".");
+            pb.directory(repoPath.toFile());
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            p.waitFor();
+
+            // Also clean up generated test files (created by LLM in previous runs)
+            java.nio.file.Path testDir = repoPath.resolve("src/test/java/com/example/order");
+            if (java.nio.file.Files.exists(testDir)) {
+                try (var paths = java.nio.file.Files.list(testDir)) {
+                    paths.filter(f -> {
+                        String name = f.getFileName().toString();
+                        return name.contains("Concurrency") || name.contains("ServiceTest")
+                                || name.endsWith("NpeTest.java") || name.endsWith("GuardTest.java");
+                    }).forEach(f -> {
+                        try { java.nio.file.Files.deleteIfExists(f); } catch (Exception ignored) {}
+                    });
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Baseline restore skipped for {}: {}", repository, e.getMessage());
+        }
+    }
 
     public CodeOpsEvalReport getLastReport() {
         return lastReport;
@@ -647,6 +702,78 @@ public class CodeOpsEvaluationService {
 
     private int size(List<String> values) {
         return values == null ? 0 : values.size();
+    }
+
+    private record MemoryExtraction(String scopeType, List<String> targetMethods,
+                                     String rootCause, String fixStrategy, String riskLevel) {}
+
+    @SuppressWarnings("unchecked")
+    private MemoryExtraction extractMemoryFromTask(EngineeringTaskEntity task, CodeOpsEvalCase evalCase) {
+        String scopeType = "";
+        List<String> targetMethods = List.of();
+        String rootCause = "";
+        String fixStrategy = "";
+        String riskLevel = "MEDIUM";
+
+        if (task.getSteps() != null) {
+            for (EngineeringTaskStepEntity step : task.getSteps()) {
+                if ("bug_fix".equals(step.getSelectedSkill())) {
+                    String json = step.getRawEvidenceJson();
+                    if (json != null && !json.isBlank()) {
+                        try {
+                            Map<String, Object> raw = com.alibaba.fastjson.JSON.parseObject(json, Map.class);
+                            // Extract root cause
+                            Object rc = raw.get("rootCause");
+                            if (rc instanceof String s && !s.isBlank()) rootCause = s;
+
+                            // Extract scope from guard
+                            Object guard = raw.get("patchScopeGuard");
+                            if (guard instanceof Map<?, ?> gm) {
+                                Object rs = gm.get("repairScope");
+                                if (rs instanceof Map<?, ?> rsm) {
+                                    Object st = rsm.get("scopeType");
+                                    if (st != null) scopeType = String.valueOf(st);
+                                    Object tm = rsm.get("targetMethods");
+                                    if (tm instanceof List<?> tml) {
+                                        targetMethods = tml.stream().map(String::valueOf).toList();
+                                    }
+                                }
+                            }
+
+                            // Extract fix strategy from LLM output
+                            Object reasoning = raw.get("reasoning");
+                            if (reasoning instanceof List<?> rl && !rl.isEmpty()) {
+                                fixStrategy = rl.stream().map(String::valueOf)
+                                        .limit(3).reduce((a, b) -> a + "; " + b).orElse("");
+                            }
+
+                            // Extract risk level
+                            Object confidence = raw.get("confidence");
+                            if (confidence instanceof String s && !s.isBlank()) {
+                                riskLevel = s;
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                    break; // only need the first bug_fix step
+                }
+            }
+        }
+
+        // Fallbacks
+        if (scopeType.isBlank()) {
+            scopeType = evalCase.getExpectedSkills().contains("bug_fix") ? "CODE_FIX" : "NO_CODE_FIX";
+        }
+        if (targetMethods.isEmpty()) {
+            targetMethods = evalCase.getExpectedTargetMethods();
+        }
+        if (rootCause.isBlank()) {
+            rootCause = evalCase.getGoal();
+        }
+        if (fixStrategy.isBlank()) {
+            fixStrategy = scopeType.contains("NO_CODE_FIX") ? "no_code_fix_needed" : "llm_determined";
+        }
+
+        return new MemoryExtraction(scopeType, targetMethods, rootCause, fixStrategy, riskLevel);
     }
 
     private String normalize(String value) {

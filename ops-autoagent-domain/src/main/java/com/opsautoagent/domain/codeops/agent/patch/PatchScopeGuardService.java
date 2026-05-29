@@ -170,9 +170,23 @@ public class PatchScopeGuardService {
             }
         }
 
+        // Verify repairScope targetMethods actually exist in the code
+        if (!scopeTargetMethods.isEmpty() && !isBlank(repositoryPath)) {
+            List<String> filesToCheck = touchedFiles.isEmpty() ? scopeTargetFiles : new ArrayList<>(touchedFiles);
+            List<String> nonexistentMethods = verifyMethodsExist(repositoryPath,
+                    filesToCheck, scopeTargetMethods);
+            if (!nonexistentMethods.isEmpty()) {
+                violations.add("HALLUCINATED_SCOPE: targetMethods not found in source files: "
+                        + nonexistentMethods + ". repairScope may be hallucinated — "
+                        + "downgrade confidence or verify CodeLocalization output.");
+            }
+        }
+
         if (!violations.isEmpty()) {
             String failureType = violations.stream().anyMatch(v -> v.contains("TOUCHED_FILE_OUT_OF_SCOPE"))
-                    ? "TOUCHED_FILE_OUT_OF_SCOPE" : "METHOD_OUT_OF_SCOPE";
+                    ? "TOUCHED_FILE_OUT_OF_SCOPE"
+                    : (violations.stream().anyMatch(v -> v.contains("HALLUCINATED_SCOPE"))
+                        ? "HALLUCINATED_SCOPE" : "METHOD_OUT_OF_SCOPE");
             return PatchScopeGuardResult.failed(failureType,
                     new ArrayList<>(touchedFiles), changedMethods, violations, repairScope);
         }
@@ -366,6 +380,35 @@ public class PatchScopeGuardService {
         if (lastSlash >= 0) name = name.substring(lastSlash + 1);
         if (name.endsWith(".java")) name = name.substring(0, name.length() - 5);
         return name;
+    }
+
+    /**
+     * Check if targetMethods actually exist in the source files.
+     * Returns list of methods that could NOT be found — empty = all good.
+     */
+    private List<String> verifyMethodsExist(String repositoryPath, List<String> files, List<String> methods) {
+        List<String> nonexistent = new ArrayList<>();
+        if (methods.isEmpty() || files.isEmpty()) return nonexistent;
+
+        Path repo = Path.of(repositoryPath).toAbsolutePath().normalize();
+        for (String method : methods) {
+            boolean found = false;
+            String shortName = method.contains(".") ? method.substring(method.lastIndexOf('.') + 1) : method;
+            for (String file : files) {
+                Path filePath = repo.resolve(normalizePath(file)).normalize();
+                if (!filePath.startsWith(repo) || !Files.exists(filePath)) continue;
+                try {
+                    String content = normalizeLineEndings(Files.readString(filePath, StandardCharsets.UTF_8));
+                    // Check if method signature exists
+                    if (content.contains(shortName + "(")) {
+                        found = true;
+                        break;
+                    }
+                } catch (IOException ignored) {}
+            }
+            if (!found) nonexistent.add(method);
+        }
+        return nonexistent;
     }
 
     private String normalizePath(String path) {

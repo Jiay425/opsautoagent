@@ -44,4 +44,6 @@ public class CodeOpsBugFixAgentInput {
 
     private List<Object> reflectionDiagnostics;
 
+    private List<Map<String, Object>> memoryHints;
+
 }

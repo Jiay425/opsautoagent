@@ -44,27 +44,22 @@ public class CodeOpsCompatibleChatClient {
     }
 
     public String unavailableReason() {
-        if (!enabled) {
-            return "CodeOps compatible LLM client is disabled.";
-        }
-        if (isBlank(baseUrl)) {
-            return "spring.ai.openai.base-url is blank.";
-        }
-        if (isBlank(apiKey)) {
-            return "spring.ai.openai.api-key is blank.";
-        }
-        if (isBlank(model)) {
-            return "spring.ai.openai.chat.options.model is blank.";
-        }
+        if (!enabled) return "CodeOps compatible LLM client is disabled.";
+        if (isBlank(baseUrl)) return "spring.ai.openai.base-url is blank.";
+        if (isBlank(apiKey)) return "spring.ai.openai.api-key is blank.";
+        if (isBlank(model)) return "spring.ai.openai.chat.options.model is blank.";
         return "";
     }
 
     public String call(String prompt) {
-        if (!available()) {
-            throw new IllegalStateException(unavailableReason());
-        }
+        return call(prompt, null);
+    }
+
+    public String call(String prompt, String modelOverride) {
+        if (!available()) throw new IllegalStateException(unavailableReason());
+
         JSONObject request = new JSONObject();
-        request.put("model", model);
+        request.put("model", modelOverride != null && !modelOverride.isBlank() ? modelOverride : model);
         request.put("messages", List.of(message("user", prompt)));
         request.put("temperature", temperature);
         request.put("max_tokens", maxTokens);
@@ -100,42 +95,28 @@ public class CodeOpsCompatibleChatClient {
 
     private String chatCompletionsUrl() {
         String root = baseUrl.trim();
-        while (root.endsWith("/")) {
-            root = root.substring(0, root.length() - 1);
-        }
+        while (root.endsWith("/")) root = root.substring(0, root.length() - 1);
         String path = isBlank(chatPath) ? "/chat/completions" : chatPath.trim();
-        if (!path.startsWith("/")) {
-            path = "/" + path;
-        }
+        if (!path.startsWith("/")) path = "/" + path;
         return root + path;
     }
 
     private String extractContent(String responseText) {
         JSONObject response = JSONObject.parseObject(responseText);
         JSONArray choices = response.getJSONArray("choices");
-        if (choices == null || choices.isEmpty()) {
-            return "";
-        }
+        if (choices == null || choices.isEmpty()) return "";
         JSONObject first = choices.getJSONObject(0);
-        if (first == null) {
-            return "";
-        }
+        if (first == null) return "";
         JSONObject message = first.getJSONObject("message");
         if (message != null) {
-            if (!isBlank(message.getString("content"))) {
-                return message.getString("content");
-            }
-            if (!isBlank(message.getString("reasoning_content"))) {
-                return message.getString("reasoning_content");
-            }
+            if (!isBlank(message.getString("content"))) return message.getString("content");
+            if (!isBlank(message.getString("reasoning_content"))) return message.getString("reasoning_content");
         }
         return first.getString("text");
     }
 
     private String abbreviate(String value, int maxLength) {
-        if (value == null) {
-            return "";
-        }
+        if (value == null) return "";
         return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
     }
 
