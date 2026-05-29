@@ -14,6 +14,10 @@ docs/codeops-agent-upgrade-handoff.md
 docs/codeops-agent-upgrade-plan.md
 docs/codeops-incident-to-fix-demo.md
 
+# Local secrets — never commit
+application-local.yml
+**/application-local.yml
+
 # Generated eval reports
 data/codeops-eval/
 
