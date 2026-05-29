@@ -144,7 +144,7 @@ ops:
       max-num-chunks: ${OPS_RUNBOOK_CHUNK_MAX_NUM_CHUNKS:80}
       keep-separator: ${OPS_RUNBOOK_CHUNK_KEEP_SEPARATOR:true}
     embedding:
-      base-url: ${OPS_RUNBOOK_EMBEDDING_BASE_URL:https://api.pie-xian.com}
+      base-url: ${OPS_RUNBOOK_EMBEDDING_BASE_URL:https://api.siliconflow.cn}
       api-key: ${OPS_RUNBOOK_EMBEDDING_API_KEY:}
       model: ${OPS_RUNBOOK_EMBEDDING_MODEL:qwen3-embedding-8b}
       dimensions: ${OPS_RUNBOOK_EMBEDDING_DIMENSIONS:768}
