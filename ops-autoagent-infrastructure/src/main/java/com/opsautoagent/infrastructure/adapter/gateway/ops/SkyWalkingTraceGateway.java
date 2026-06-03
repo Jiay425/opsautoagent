@@ -14,6 +14,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Component
@@ -42,6 +43,13 @@ public class SkyWalkingTraceGateway extends AbstractOpsHttpGateway implements IO
                             "Configure ops.integrations.skywalking.graphql-url, for example http://127.0.0.1:12800/graphql.",
                             "SkyWalking will collect traceId details, service metrics, error trace samples, and slow trace samples."))
                     .rawData("")
+                    .sourceMetadata(Map.of(
+                            "sourceType", "SKYWALKING",
+                            "sourceMode", "UNCONFIGURED",
+                            "graphqlUrl", value(graphqlUrl),
+                            "traceId", value(command.getTraceId()),
+                            "endpoint", value(command.getProblem()),
+                            "fixtureFallback", false))
                     .build();
         }
 
@@ -75,6 +83,16 @@ public class SkyWalkingTraceGateway extends AbstractOpsHttpGateway implements IO
                 .summary("Collected SkyWalking evidence for trace detail, service metrics, error traces, and slow traces in the incident window.")
                 .spans(spans)
                 .rawData(abbreviate(rawData.toString(), 12000))
+                .sourceMetadata(Map.of(
+                        "sourceType", "SKYWALKING",
+                        "sourceMode", "REAL_HTTP",
+                        "graphqlUrl", value(graphqlUrl),
+                        "traceId", value(command.getTraceId()),
+                        "serviceName", value(command.getServiceName()),
+                        "endpoint", value(command.getProblem()),
+                        "timeWindow", command.getStartTime() + " ~ " + command.getEndTime(),
+                        "queriedSections", List.of("trace_detail", "service_metadata", "service_metrics", "error_trace_samples", "slow_trace_samples"),
+                        "fixtureFallback", false))
                 .build();
     }
 
@@ -272,6 +290,10 @@ public class SkyWalkingTraceGateway extends AbstractOpsHttpGateway implements IO
         return value == null ? "" : value;
     }
 
+    private String value(String value) {
+        return value == null ? "" : value;
+    }
+
     private String graphqlEscape(String value) {
         if (value == null) {
             return "";
@@ -283,4 +305,3 @@ public class SkyWalkingTraceGateway extends AbstractOpsHttpGateway implements IO
     }
 
 }
-

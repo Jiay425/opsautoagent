@@ -63,7 +63,7 @@ public class CodeOpsBugFixAgentService {
         long start = System.currentTimeMillis();
         String content = null;
         try {
-            content = compatibleChatClient.call(prompt, modelDecision.getModel());
+            content = compatibleChatClient.call(prompt, modelDecision.getModel(), modelDecision.getMaxTokens());
             CodeOpsBugFixAgentOutput parsed = parse(content);
             parsed.setModelRouting(Map.of(
                     "model", modelDecision.getModel(),
@@ -100,6 +100,12 @@ public class CodeOpsBugFixAgentService {
                     .riskNotes(List.of())
                     .rawContent(content == null ? "" : content)
                     .errorMessage(e.getMessage())
+                    .modelRouting(Map.of(
+                            "model", modelDecision.getModel(),
+                            "modelTier", isFlashFailure ? "flash" : "pro",
+                            "reason", modelDecision.getReason(),
+                            "reflectionRound", reflectionRound
+                    ))
                     .costMillis(System.currentTimeMillis() - start)
                     .createTime(LocalDateTime.now())
                     .build();

@@ -7,6 +7,7 @@ import com.opsautoagent.domain.codeops.agent.eval.CodeOpsEvaluationService;
 import com.opsautoagent.domain.codeops.agent.llm.ModelRouter;
 import com.opsautoagent.domain.codeops.agent.scheduler.IncidentScheduler;
 import com.opsautoagent.domain.codeops.agent.security.HumanApprovalGate;
+import com.opsautoagent.domain.codeops.service.EngineeringTaskAgentService;
 import com.opsautoagent.types.enums.ResponseCode;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -20,6 +21,7 @@ import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
+import java.util.UUID;
 
 @Slf4j
 @RestController
@@ -32,6 +34,9 @@ public class CodeOpsEvaluationController {
 
     @Resource
     private HumanApprovalGate humanApprovalGate;
+
+    @Resource
+    private EngineeringTaskAgentService engineeringTaskAgentService;
 
     @Resource
     private IncidentScheduler incidentScheduler;
@@ -117,7 +122,7 @@ public class CodeOpsEvaluationController {
     @PostMapping("approval/{taskId}/approve")
     public Response<Map<String, Object>> approveTask(@PathVariable String taskId) {
         try {
-            HumanApprovalGate.ApprovalRecord record = humanApprovalGate.approve(taskId);
+            HumanApprovalGate.ApprovalRecord record = engineeringTaskAgentService.approveTask(taskId);
             return Response.<Map<String, Object>>builder()
                     .code(ResponseCode.SUCCESS.getCode())
                     .info("Task approved by human reviewer")
@@ -136,7 +141,7 @@ public class CodeOpsEvaluationController {
                                                      @RequestBody Map<String, String> body) {
         try {
             String reason = body.getOrDefault("reason", "No reason provided");
-            HumanApprovalGate.ApprovalRecord record = humanApprovalGate.reject(taskId, reason);
+            HumanApprovalGate.ApprovalRecord record = engineeringTaskAgentService.rejectTask(taskId, reason);
             return Response.<Map<String, Object>>builder()
                     .code(ResponseCode.SUCCESS.getCode())
                     .info("Task rejected: " + reason)
@@ -181,12 +186,14 @@ public class CodeOpsEvaluationController {
     public Response<Map<String, Object>> simulateAlertStorm(@RequestBody Map<String, Object> body) {
         int count = body.get("count") instanceof Number n ? n.intValue() : 100;
         String severity = body.get("severity") instanceof String s ? s : "HIGH";
+        String runId = body.get("runId") instanceof String s && !s.isBlank()
+                ? s : UUID.randomUUID().toString();
         int acceptedCount = 0;
         int dedupedCount = 0;
 
         // Simulate N alerts with slight variations to trigger both dedup and aggregation
         for (int i = 0; i < count; i++) {
-            String fingerprint = "storm-test-" + (i % 5); // 5 unique fingerprints
+            String fingerprint = runId + "-storm-test-" + (i % 5); // 5 unique fingerprints per simulation run
             String service = "order-service-" + (i % 3);  // 3 services
             var result = incidentScheduler.ingest(
                     fingerprint,
@@ -205,6 +212,7 @@ public class CodeOpsEvaluationController {
                 .info(String.format("Sent %d alerts: %d deduped, %d accepted into queue",
                         count, dedupedCount, acceptedCount))
                 .data(Map.of(
+                        "runId", runId,
                         "totalSent", count,
                         "deduped", dedupedCount,
                         "accepted", acceptedCount,

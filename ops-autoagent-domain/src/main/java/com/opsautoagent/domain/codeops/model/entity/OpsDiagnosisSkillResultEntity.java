@@ -34,6 +34,10 @@ public class OpsDiagnosisSkillResultEntity {
 
     private Map<String, Object> evidenceDetails;
 
+    private Map<String, Object> evidenceCoverage;
+
+    private List<Map<String, Object>> evidenceProvenance;
+
     private String errorMessage;
 
 }

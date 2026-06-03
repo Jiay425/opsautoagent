@@ -33,6 +33,7 @@ public class PgVectorOpsRunbookGateway implements IOpsRunbookGateway {
 
     private final VectorStore vectorStore;
     private final FileOpsRunbookGateway fileOpsRunbookGateway;
+    private final RunbookCrossEncoderReranker crossEncoderReranker;
 
     @Value("${ops.runbook.vector.fallback-to-file:true}")
     private boolean fallbackToFile;
@@ -49,9 +50,12 @@ public class PgVectorOpsRunbookGateway implements IOpsRunbookGateway {
     @Value("${ops.runbook.hybrid.keyword-weight:1.3}")
     private double keywordWeight;
 
-    public PgVectorOpsRunbookGateway(VectorStore vectorStore, FileOpsRunbookGateway fileOpsRunbookGateway) {
+    public PgVectorOpsRunbookGateway(VectorStore vectorStore,
+                                     FileOpsRunbookGateway fileOpsRunbookGateway,
+                                     RunbookCrossEncoderReranker crossEncoderReranker) {
         this.vectorStore = vectorStore;
         this.fileOpsRunbookGateway = fileOpsRunbookGateway;
+        this.crossEncoderReranker = crossEncoderReranker;
     }
 
     @Override
@@ -62,7 +66,7 @@ public class PgVectorOpsRunbookGateway implements IOpsRunbookGateway {
             String query = buildQuery(command, rootCauseCandidates);
             List<RunbookMatchEntity> vectorMatches = vectorSearch(query, topK);
             List<RunbookMatchEntity> keywordMatches = hybridEnabled
-                    ? fileOpsRunbookGateway.search(command, rootCauseCandidates, overFetchTopK(topK))
+                    ? fileOpsRunbookGateway.searchCandidates(command, rootCauseCandidates, overFetchTopK(topK))
                     : List.of();
             List<RunbookMatchEntity> matches = mergeHybridMatches(vectorMatches, keywordMatches, topK, query);
             if (!matches.isEmpty()) {
@@ -85,7 +89,7 @@ public class PgVectorOpsRunbookGateway implements IOpsRunbookGateway {
             String query = buildSignalQuery(command, evidenceSignals);
             List<RunbookMatchEntity> vectorMatches = vectorSearch(query, topK);
             List<RunbookMatchEntity> keywordMatches = hybridEnabled
-                    ? fileOpsRunbookGateway.searchByEvidenceSignals(command, evidenceSignals, overFetchTopK(topK))
+                    ? fileOpsRunbookGateway.searchSignalCandidates(command, evidenceSignals, overFetchTopK(topK))
                     : List.of();
             List<RunbookMatchEntity> matches = mergeHybridMatches(vectorMatches, keywordMatches, topK, query);
             if (!matches.isEmpty()) {
@@ -130,14 +134,28 @@ public class PgVectorOpsRunbookGateway implements IOpsRunbookGateway {
     }
 
     private RunbookMatchEntity toRunbookMatch(Document document) {
+        int vectorScore = document.getScore() == null ? 0 : Math.max(1, (int) Math.round(document.getScore() * 100));
         return RunbookMatchEntity.builder()
                 .runbookId(metadata(document, "runbookId", document.getId()))
                 .title(metadata(document, "title", "运维知识库 Runbook"))
                 .category(metadata(document, "category", "general"))
-                .score(document.getScore() == null ? 0 : Math.max(1, (int) Math.round(document.getScore() * 100)))
+                .score(vectorScore)
+                .vectorScore(vectorScore)
+                .keywordScore(0)
+                .bm25Score(0)
+                .hybridScore(vectorScore)
+                .lexicalBoostScore(0)
+                .crossEncoderScore(0)
+                .retrievalMode("VECTOR")
                 .path("pgvector:" + metadata(document, "path", "vector_store_openai"))
                 .summary(abbreviate(document.getText(), 600))
                 .content(buildParentChildContent(document))
+                .chunkId(metadata(document, "chunkId", document.getId()))
+                .chunkIndex(parseIntMetadata(document, "chunkIndex"))
+                .chunkCount(parseIntMetadata(document, "chunkCount"))
+                .documentVersion(metadata(document, "documentVersion", "unknown"))
+                .documentHash(metadata(document, "documentHash", ""))
+                .rankExplanation("vectorScore=" + vectorScore + ", source=pgvector")
                 .build();
     }
 
@@ -156,14 +174,15 @@ public class PgVectorOpsRunbookGateway implements IOpsRunbookGateway {
                                                         List<RunbookMatchEntity> keywordMatches,
                                                         int topK,
                                                         String query) {
-        Map<String, HybridRank> rankByRunbook = new LinkedHashMap<>();
-        addRankScores(rankByRunbook, vectorMatches, vectorWeight, query);
-        addRankScores(rankByRunbook, keywordMatches, keywordWeight, query);
-        return rankByRunbook.values().stream()
+        Map<String, HybridRank> rankByChunk = new LinkedHashMap<>();
+        addRankScores(rankByChunk, vectorMatches, vectorWeight, query);
+        addRankScores(rankByChunk, keywordMatches, keywordWeight, query);
+        List<RunbookMatchEntity> ranked = rankByChunk.values().stream()
                 .sorted((left, right) -> Double.compare(right.score, left.score))
                 .map(HybridRank::toMatch)
-                .limit(Math.max(1, topK))
+                .limit(overFetchTopK(topK))
                 .toList();
+        return crossEncoderReranker.rerank(query, ranked, topK);
     }
 
     private void addRankScores(Map<String, HybridRank> rankByRunbook,
@@ -175,100 +194,43 @@ public class PgVectorOpsRunbookGateway implements IOpsRunbookGateway {
         }
         for (int i = 0; i < matches.size(); i++) {
             RunbookMatchEntity match = matches.get(i);
-            String key = safe(match.getRunbookId());
+            String key = firstNonBlank(match.getChunkId(), match.getDocumentHash(), match.getRunbookId());
             if (key.isBlank()) {
                 continue;
             }
             double rrfScore = weight / (rrfK + i + 1);
-            double boostScore = lexicalBoost(key, query) / 100.0;
             HybridRank rank = rankByRunbook.computeIfAbsent(key, ignored -> new HybridRank(match));
-            rank.score += rrfScore + boostScore;
+            rank.score += rrfScore;
+            rank.vectorScore = Math.max(rank.vectorScore, "VECTOR".equals(match.getRetrievalMode()) ? score(match) : score(match.getVectorScore()));
+            boolean bm25Match = "BM25_CHUNK".equals(match.getRetrievalMode()) || "KEYWORD".equals(match.getRetrievalMode());
+            rank.keywordScore = Math.max(rank.keywordScore, bm25Match ? score(match) : score(match.getKeywordScore()));
+            rank.bm25Score = Math.max(rank.bm25Score, score(match.getBm25Score()));
+            rank.lexicalBoostScore = 0;
+            rank.sources.add(match.getRetrievalMode() == null ? "UNKNOWN" : match.getRetrievalMode());
             if (score(match) > score(rank.match)) {
                 rank.match = match;
             }
         }
     }
 
-    private int lexicalBoost(String runbookId, String query) {
-        String q = safe(query).toLowerCase();
-        if (containsAny(q, "hikari", "connection is not available", "connection pool", "jdbc connection", "pending connection", "acquire time", "maximum pool")) {
-            return "database-connection-pool".equals(runbookId) ? 30 : 0;
-        }
-        if (containsAny(q, "slow sql", "db span", "lock wait", "deadlock", "rows_examined", "explain", "query timeout")) {
-            return "slow-sql-db-span".equals(runbookId) ? 30 : 0;
-        }
-        if (containsAny(q, "nullpointer", "illegalargument", "business exception", "stacktrace", "application exception", "http 500")) {
-            return "http-500-error".equals(runbookId) ? 28 : 0;
-        }
-        if (containsAny(q, "gateway", "upstream", "no healthy upstream", "route", "502", "503", "504")) {
-            return "gateway-http-5xx".equals(runbookId) ? 30 : 0;
-        }
-        if (containsAny(q, "no_anomaly", "no anomaly", "missing trace", "no trace", "no log", "sampling", "observability", "blind spot", "coverage gap")) {
-            return "observability-gap".equals(runbookId) ? 35 : 0;
-        }
-        if (containsAny(q, "sufficiency", "negative evidence", "need_more_evidence", "probable_root_cause", "root_cause_confirmed", "direct evidence")) {
-            return "evidence-sufficiency-policy".equals(runbookId) ? 35 : 0;
-        }
-        if (containsAny(q, "redis", "lettuce", "jedis", "cache", "hot key", "big key")) {
-            return "redis-timeout".equals(runbookId) ? 30 : 0;
-        }
-        if (containsAny(q, "rpc", "dubbo", "feign", "downstream", "webclient", "resttemplate")) {
-            return "rpc-timeout".equals(runbookId) ? 30 : 0;
-        }
-        if (containsAny(q, "full gc", "outofmemory", "old gen", "gc pause", "heap")) {
-            return "jvm-full-gc".equals(runbookId) ? 30 : 0;
-        }
-        if (containsAny(q, "mq", "kafka", "rocketmq", "rabbitmq", "consumer lag", "dead letter")) {
-            return "mq-backlog".equals(runbookId) ? 30 : 0;
-        }
-        if (containsAny(q, "thread pool", "tomcat_threads_busy", "rejectedexecution", "executor_active", "queue size")) {
-            return "thread-pool-saturation".equals(runbookId) ? 30 : 0;
-        }
-        if (containsAny(q, "cpu", "load average", "throttling", "hot thread", "process_cpu")) {
-            return "cpu-saturation".equals(runbookId) ? 30 : 0;
-        }
-        return 0;
-    }
-
-    private boolean containsAny(String value, String... keywords) {
-        for (String keyword : keywords) {
-            if (value.contains(keyword)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private int score(RunbookMatchEntity match) {
         return match == null || match.getScore() == null ? 0 : match.getScore();
     }
 
-    private String buildParentChildContent(Document document) {
-        String chunkText = abbreviate(document.getText(), 1200);
-        String parentContext = readParentContext(metadata(document, "path", ""));
-        if (parentContext.isBlank()) {
-            return chunkText;
-        }
-        return String.join("\n\n",
-                "命中片段:\n" + chunkText,
-                "父文档上下文:\n" + parentContext);
+    private int score(Integer value) {
+        return value == null ? 0 : value;
     }
 
-    private String readParentContext(String path) {
-        if (path == null || path.isBlank()) {
-            return "";
-        }
-        try {
-            Path parentPath = Path.of(path);
-            if (!Files.isRegularFile(parentPath)) {
-                return "";
-            }
-            String content = Files.readString(parentPath, StandardCharsets.UTF_8);
-            return abbreviate(content, 2800);
-        } catch (Exception e) {
-            log.debug("Read parent runbook context failed. path={}", path, e);
-            return "";
-        }
+    private String buildParentChildContent(Document document) {
+        String chunkText = abbreviate(document.getText(), 1200);
+        return String.join("\n\n",
+                "命中片段:\n" + chunkText,
+                "片段元数据: runbookId=" + metadata(document, "runbookId", "")
+                        + ", chunkId=" + metadata(document, "chunkId", "")
+                        + ", chunkIndex=" + metadata(document, "chunkIndex", "")
+                        + ", chunkCount=" + metadata(document, "chunkCount", "")
+                        + ", documentVersion=" + metadata(document, "documentVersion", "")
+                        + ", path=" + metadata(document, "path", ""));
     }
 
     private int overFetchTopK(int topK) {
@@ -280,8 +242,35 @@ public class PgVectorOpsRunbookGateway implements IOpsRunbookGateway {
         return value == null ? defaultValue : value.toString();
     }
 
+    private Integer parseIntMetadata(Document document, String key) {
+        Object value = document.getMetadata() == null ? null : document.getMetadata().get(key);
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(value.toString());
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
     private String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return "";
     }
 
     private String abbreviate(String value, int maxLength) {
@@ -294,6 +283,11 @@ public class PgVectorOpsRunbookGateway implements IOpsRunbookGateway {
     private static class HybridRank {
         private RunbookMatchEntity match;
         private double score;
+        private int vectorScore;
+        private int keywordScore;
+        private int bm25Score;
+        private int lexicalBoostScore;
+        private final java.util.Set<String> sources = new java.util.LinkedHashSet<>();
 
         private HybridRank(RunbookMatchEntity match) {
             this.match = match;
@@ -301,7 +295,20 @@ public class PgVectorOpsRunbookGateway implements IOpsRunbookGateway {
 
         private RunbookMatchEntity toMatch() {
             int currentScore = match.getScore() == null ? 0 : match.getScore();
-            match.setScore(Math.min(100, Math.max(currentScore, (int) Math.round(score * 1000))));
+            int hybridScore = Math.min(100, Math.max(currentScore, (int) Math.round(score * 1000)));
+            match.setScore(hybridScore);
+            match.setHybridScore(hybridScore);
+            match.setVectorScore(vectorScore);
+            match.setKeywordScore(keywordScore);
+            match.setBm25Score(bm25Score);
+            match.setLexicalBoostScore(lexicalBoostScore);
+            match.setCrossEncoderScore(match.getCrossEncoderScore() == null ? 0 : match.getCrossEncoderScore());
+            match.setRetrievalMode(sources.size() > 1 ? "HYBRID" : sources.stream().findFirst().orElse(match.getRetrievalMode()));
+            match.setRankExplanation("retrievalMode=" + match.getRetrievalMode()
+                    + ", vectorScore=" + vectorScore
+                    + ", bm25Score=" + bm25Score
+                    + ", lexicalBoost=" + lexicalBoostScore
+                    + ", rrfHybridScore=" + String.format(java.util.Locale.ROOT, "%.4f", score));
             return match;
         }
     }

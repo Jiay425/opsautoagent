@@ -8,7 +8,7 @@ public class InventoryService {
         if (currentStock < quantity) throw new IllegalStateException("Insufficient stock for sku " + skuId);
         inventoryRepository.updateStock(skuId, currentStock - quantity);
     }
-    public void release(String skuId, int quantity) {
+    public synchronized void release(String skuId, int quantity) {
         int currentStock = inventoryRepository.getStock(skuId);
         inventoryRepository.updateStock(skuId, currentStock + quantity);
     }

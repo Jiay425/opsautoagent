@@ -41,7 +41,7 @@ public class IncidentPriorityQueue {
     /**
      * Add an aggregated incident to the queue.
      */
-    public void enqueue(IncidentDedupService.AggregatedIncident incident) {
+    public QueuedIncident enqueue(IncidentDedupService.AggregatedIncident incident) {
         QueuedIncident qi = new QueuedIncident(
                 incident.getGroupKey(), incident.getService(), incident.getAlertName(),
                 incident.getHighestSeverity(), incident.getAlertCount(),
@@ -52,6 +52,7 @@ public class IncidentPriorityQueue {
         persist();
         log.info("Queued incident [{}]: service={}, severity={}, alerts={}, queueSize={}",
                 qi.groupKey, qi.service, qi.severity, qi.alertCount, queue.size());
+        return qi;
     }
 
     /**

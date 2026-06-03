@@ -11,6 +11,10 @@ import com.opsautoagent.domain.codeops.agent.patch.PatchApplyService;
 import com.opsautoagent.domain.codeops.agent.patch.FileRewritePatchEntity;
 import com.opsautoagent.domain.codeops.agent.patch.PatchScopeGuardResult;
 import com.opsautoagent.domain.codeops.agent.patch.PatchScopeGuardService;
+import com.opsautoagent.domain.codeops.agent.patch.PatchSandboxService;
+import com.opsautoagent.domain.codeops.agent.patch.PatchSandboxWorkspace;
+import com.opsautoagent.domain.codeops.agent.patch.PatchDiffAnalysisResult;
+import com.opsautoagent.domain.codeops.agent.patch.PatchDiffAnalysisService;
 import com.opsautoagent.domain.codeops.agent.patch.PatchValidationResult;
 import com.opsautoagent.domain.codeops.agent.patch.PatchValidationService;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringKnowledgeMatchEntity;
@@ -53,6 +57,8 @@ public class BugFixSkill implements EngineeringSkill {
     private final PatchApplyService patchApplyService;
 
     private final PatchScopeGuardService patchScopeGuardService;
+    private final PatchSandboxService patchSandboxService;
+    private final PatchDiffAnalysisService patchDiffAnalysisService;
 
     private final IncidentMemoryService incidentMemoryService;
     private final AgentPermissionPolicy permissionPolicy;
@@ -66,6 +72,8 @@ public class BugFixSkill implements EngineeringSkill {
                        PatchValidationService patchValidationService,
                        PatchApplyService patchApplyService,
                        PatchScopeGuardService patchScopeGuardService,
+                       PatchSandboxService patchSandboxService,
+                       PatchDiffAnalysisService patchDiffAnalysisService,
                        IncidentMemoryService incidentMemoryService,
                        AgentPermissionPolicy permissionPolicy,
                        HumanApprovalGate humanApprovalGate) {
@@ -74,6 +82,8 @@ public class BugFixSkill implements EngineeringSkill {
         this.patchValidationService = patchValidationService;
         this.patchApplyService = patchApplyService;
         this.patchScopeGuardService = patchScopeGuardService;
+        this.patchSandboxService = patchSandboxService;
+        this.patchDiffAnalysisService = patchDiffAnalysisService;
         this.incidentMemoryService = incidentMemoryService;
         this.permissionPolicy = permissionPolicy;
         this.humanApprovalGate = humanApprovalGate;
@@ -125,8 +135,9 @@ public class BugFixSkill implements EngineeringSkill {
 
         // Recall similar incident patterns from multi-layer memory
         List<String> memoryKeywords = extractMemoryKeywords(task.getGoal(), diagnosisClues, suspiciousLocations);
+        IncidentMemoryService.MemoryRecallResult memoryRecall = incidentMemoryService.recall(memoryKeywords);
         String memoryPrompt = incidentMemoryService.buildMemoryPrompt(memoryKeywords);
-        List<Map<String, Object>> memoryHints = List.of();
+        List<Map<String, Object>> memoryHints = buildMemoryHints(memoryRecall);
         if (!memoryPrompt.isBlank()) {
             // Inject as additional diagnosis clue so LLM sees AVOID hints
             diagnosisClues = appendMemoryToClues(diagnosisClues, memoryPrompt);
@@ -196,29 +207,80 @@ public class BugFixSkill implements EngineeringSkill {
                             PatchValidationResult.builder().patchPresent(false).valid(false).build(),
                             PatchApplyResult.skipped(suggestion.getRepositoryPath(), "Blocked by PatchScopeGuard"),
                             SourceValidationResult.skipped(),
-                            null, false, llmFix, scopeGuard))
+                            null, false, llmFix, scopeGuard,
+                            patchDiffAnalysisService.analyze(suggestion.getPatchDraft(),
+                                    PatchValidationResult.builder().patchPresent(false).valid(false).build(), scopeGuard),
+                            PatchSandboxWorkspace.direct(suggestion.getRepositoryPath(), "Blocked before sandbox creation")))
                     .build();
         }
 
         PatchValidationResult patchValidation = patchValidationService.validate(
                 suggestion.getRepositoryPath(),
                 suggestion.getPatchDraft());
-        Map<String, String> sourceSnapshot = snapshotFiles(suggestion.getRepositoryPath(), patchValidation.getExistingTouchedFiles());
-        List<String> newSourceFiles = missingFiles(suggestion.getRepositoryPath(), patchValidation.getTouchedFiles());
+        PatchDiffAnalysisResult diffAnalysis = patchDiffAnalysisService.analyze(
+                suggestion.getPatchDraft(), patchValidation, scopeGuard);
+        if (!diffAnalysis.isStaticSafetyPassed() && !allowSensitivePatch(task)) {
+            return EngineeringSkillResultEntity.builder()
+                    .skillId(SKILL_ID)
+                    .status("FAILED")
+                    .summary("PatchStaticSafety 拦截：补丁涉及敏感文件，未获得审批。sensitiveFiles="
+                            + diffAnalysis.getSensitiveFiles())
+                    .evidence(List.of(
+                            "敏感文件：" + join(diffAnalysis.getSensitiveFiles()),
+                            "质量告警：" + join(diffAnalysis.getQualityWarnings()),
+                            "最小修改评分：" + diffAnalysis.getMinimalChangeScore()
+                    ))
+                    .nextActions(List.of(
+                            "让 LLM 重新生成仅修改业务源码/测试的最小补丁",
+                            "如果确实必须修改配置、构建脚本或 pom，需要先走人工审批并设置 allowSensitivePatch=true"
+                    ))
+                    .rawOutput(buildRawOutput(suggestion, task, patchValidation,
+                            PatchApplyResult.skipped(suggestion.getRepositoryPath(), "Blocked by PatchStaticSafety"),
+                            SourceValidationResult.skipped(), null, false, llmFix, scopeGuard,
+                            diffAnalysis, PatchSandboxWorkspace.direct(suggestion.getRepositoryPath(), "Blocked before sandbox creation")))
+                    .build();
+        }
+        PatchSandboxWorkspace patchSandbox = shouldApplyPatch(task)
+                ? patchSandboxService.prepare(suggestion.getRepositoryPath(), task.getTaskId())
+                : PatchSandboxWorkspace.direct(suggestion.getRepositoryPath(), "Patch apply disabled.");
+        if (shouldApplyPatch(task) && !patchSandbox.isIsolated()) {
+            return EngineeringSkillResultEntity.builder()
+                    .skillId(SKILL_ID)
+                    .status("FAILED")
+                    .summary("PatchSandbox 创建失败：为避免污染原始仓库，补丁未应用。reason="
+                            + patchSandbox.getErrorMessage())
+                    .evidence(List.of(
+                            "原始仓库：" + suggestion.getRepositoryPath(),
+                            "沙箱状态：" + patchSandbox.toRawOutput(),
+                            "补丁未应用到原始仓库"
+                    ))
+                    .nextActions(List.of("检查 codeops.patch.sandbox.base-dir 权限", "修复沙箱创建失败后重新执行"))
+                    .rawOutput(buildRawOutput(suggestion, task, patchValidation,
+                            PatchApplyResult.skipped(suggestion.getRepositoryPath(), "Patch sandbox not isolated"),
+                            SourceValidationResult.skipped(), null, false, llmFix, scopeGuard,
+                            diffAnalysis, patchSandbox))
+                    .build();
+        }
+        String executionRepositoryPath = firstNonBlank(patchSandbox.getSandboxRepositoryPath(), suggestion.getRepositoryPath());
+        PatchValidationResult executionPatchValidation = patchValidationService.validate(
+                executionRepositoryPath,
+                suggestion.getPatchDraft());
+        Map<String, String> sourceSnapshot = snapshotFiles(executionRepositoryPath, executionPatchValidation.getExistingTouchedFiles());
+        List<String> newSourceFiles = missingFiles(executionRepositoryPath, executionPatchValidation.getTouchedFiles());
         PatchApplyResult patchApply = shouldApplyPatch(task)
-                ? patchApplyService.apply(suggestion.getRepositoryPath(), suggestion.getPatchDraft())
+                ? patchApplyService.apply(executionRepositoryPath, suggestion.getPatchDraft())
                 : PatchApplyResult.skipped(suggestion.getRepositoryPath(), "Patch apply disabled. Set task context allowPatchApply=true to modify repository files.");
         SourceValidationResult sourceValidation = patchApply.isApplied()
-                ? validateTouchedJavaSources(suggestion.getRepositoryPath(), patchValidation.getTouchedFiles())
+                ? validateTouchedJavaSources(executionRepositoryPath, executionPatchValidation.getTouchedFiles())
                 : SourceValidationResult.skipped();
         EngineeringToolGateway.CommandResult compileGate = patchApply.isApplied() && sourceValidation.valid()
-                ? runCompileGate(task)
+                ? runCompileGate(executionRepositoryPath)
                 : null;
         boolean compileGatePassed = sourceValidation.valid() && (compileGate == null || compileGate.success());
         boolean patchRolledBack = false;
         if (patchApply.isApplied() && !compileGatePassed) {
-            boolean restoredExisting = restoreFiles(suggestion.getRepositoryPath(), sourceSnapshot);
-            boolean removedNew = deleteFiles(suggestion.getRepositoryPath(), newSourceFiles);
+            boolean restoredExisting = restoreFiles(executionRepositoryPath, sourceSnapshot);
+            boolean removedNew = deleteFiles(executionRepositoryPath, newSourceFiles);
             patchRolledBack = restoredExisting || removedNew;
         }
         boolean fixReady = Boolean.TRUE.equals(suggestion.getLlmGenerated())
@@ -251,7 +313,8 @@ public class BugFixSkill implements EngineeringSkill {
                         "相关测试：" + join(diffContext.getRelatedTestFiles())
                 ))
                 .nextActions(List.of("结合 Issue/告警原文补充复现条件", "由 LLM/人工确认具体代码修改点", "交给 Test Verification Skill 生成验证计划"))
-                .rawOutput(buildRawOutput(suggestion, task, patchValidation, patchApply, sourceValidation, compileGate, patchRolledBack, llmFix, scopeGuard))
+                .rawOutput(buildRawOutput(suggestion, task, executionPatchValidation, patchApply, sourceValidation,
+                        compileGate, patchRolledBack, llmFix, scopeGuard, diffAnalysis, patchSandbox))
                 .build();
     }
 
@@ -263,11 +326,25 @@ public class BugFixSkill implements EngineeringSkill {
                                                          EngineeringToolGateway.CommandResult compileGate,
                                                          boolean patchRolledBack,
                                                          CodeOpsBugFixAgentOutput llmFix,
-                                                         PatchScopeGuardResult scopeGuard) {
+                                                         PatchScopeGuardResult scopeGuard,
+                                                         PatchDiffAnalysisResult diffAnalysis,
+                                                         PatchSandboxWorkspace patchSandbox) {
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("phase", "PHASE_5_BUG_FIX_PATCH_PROPOSAL");
         output.put("patchScopeGuard", scopeGuard == null ? Map.of() : scopeGuard.toRawOutput());
         output.put("repositoryPath", suggestion.getRepositoryPath());
+        output.put("originalRepositoryPath", suggestion.getRepositoryPath());
+        output.put("sandboxRepositoryPath", patchSandbox == null ? "" : value(patchSandbox.getSandboxRepositoryPath(), ""));
+        output.put("patchSandbox", patchSandbox == null ? Map.of() : patchSandbox.toRawOutput());
+        output.put("patchDiffAnalysis", diffAnalysis == null ? Map.of() : diffAnalysis.toRawOutput());
+        output.put("patchQuality", diffAnalysis == null ? Map.of() : Map.of(
+                "minimalChangeScore", diffAnalysis.getMinimalChangeScore(),
+                "staticSafetyPassed", diffAnalysis.isStaticSafetyPassed(),
+                "scopeAligned", diffAnalysis.isScopeAligned(),
+                "testsChanged", diffAnalysis.isTestsChanged(),
+                "requiresHumanApproval", diffAnalysis.isRequiresHumanApproval(),
+                "qualityWarnings", diffAnalysis.getQualityWarnings() == null ? List.of() : diffAnalysis.getQualityWarnings()
+        ));
         output.put("changeRef", suggestion.getChangeRef());
         output.put("changedFiles", suggestion.getChangedFiles());
         output.put("suspiciousLocations", suggestion.getSuspiciousLocations());
@@ -392,8 +469,8 @@ public class BugFixSkill implements EngineeringSkill {
         return index >= 0 && !safeContent.substring(index + 1).trim().isEmpty();
     }
 
-    private EngineeringToolGateway.CommandResult runCompileGate(EngineeringTaskEntity task) {
-        return toolGateway.runMavenCommand(task.getRepository(), List.of("-q", "-DskipTests", "compile"), compileTimeoutMs);
+    private EngineeringToolGateway.CommandResult runCompileGate(String repositoryPath) {
+        return toolGateway.runMavenCommand(repositoryPath, List.of("-q", "-DskipTests", "compile"), compileTimeoutMs);
     }
 
     private boolean shouldApplyPatch(EngineeringTaskEntity task) {
@@ -401,6 +478,14 @@ public class BugFixSkill implements EngineeringSkill {
             return false;
         }
         Object value = task.getContext().get("allowPatchApply");
+        return value instanceof Boolean bool ? bool : "true".equalsIgnoreCase(String.valueOf(value));
+    }
+
+    private boolean allowSensitivePatch(EngineeringTaskEntity task) {
+        if (task.getContext() == null) {
+            return false;
+        }
+        Object value = task.getContext().get("allowSensitivePatch");
         return value instanceof Boolean bool ? bool : "true".equalsIgnoreCase(String.valueOf(value));
     }
 
@@ -1072,6 +1157,18 @@ public class BugFixSkill implements EngineeringSkill {
         return value == null ? "" : String.valueOf(value);
     }
 
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (!isBlank(value)) {
+                return value;
+            }
+        }
+        return "";
+    }
+
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
     }
@@ -1467,6 +1564,17 @@ public class BugFixSkill implements EngineeringSkill {
         clues.add(memoryPrompt);
         clues.add("=== END MEMORY RECALL ===");
         return clues;
+    }
+
+    private List<Map<String, Object>> buildMemoryHints(IncidentMemoryService.MemoryRecallResult recall) {
+        if (recall == null || recall.isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> hints = new ArrayList<>();
+        hints.addAll(recall.failurePatterns == null ? List.of() : recall.failurePatterns);
+        hints.addAll(recall.successPatterns == null ? List.of() : recall.successPatterns);
+        hints.addAll(recall.teamReferences == null ? List.of() : recall.teamReferences);
+        return hints.size() <= 10 ? hints : hints.subList(0, 10);
     }
 
     private String extractMethodFromLocation(String location) {

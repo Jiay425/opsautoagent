@@ -64,6 +64,8 @@ public class CodeOpsAlertTriggerService {
     private Map<String, Object> buildContext(OpsAlertEventEntity alertEvent, IncidentCommandEntity command) {
         Map<String, Object> context = new LinkedHashMap<>();
         context.put("source", "alertmanager");
+        context.put("evidenceMode", "LIVE");
+        context.put("fixtureFallbackAllowed", false);
         context.put("eventId", alertEvent.getEventId());
         context.put("alertRule", alertEvent.getAlertRule());
         context.put("severity", alertEvent.getSeverity());

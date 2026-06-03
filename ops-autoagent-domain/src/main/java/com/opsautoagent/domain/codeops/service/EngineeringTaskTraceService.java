@@ -51,6 +51,8 @@ public class EngineeringTaskTraceService {
         putIfPresent(summary, "releaseRisk", compactMap(workingMemory.getReleaseRisk(),
                 "releaseRiskReport", "humanApprovalPoints", "releaseRiskReasoning"));
         putIfPresent(summary, "agentTrace", workingMemory.getAgentTrace());
+        putIfPresent(summary, "agentRuntimeTrace", task.getContext().get("agentRuntimeTrace"));
+        putIfPresent(summary, "toolRuntimeTrace", task.getContext().get("toolRuntimeTrace"));
         return summary;
     }
 
@@ -114,6 +116,8 @@ public class EngineeringTaskTraceService {
         putIfPresent(highlights, "riskPoints", rawEvidence.get("riskPoints"));
         putIfPresent(highlights, "observationMetrics", rawEvidence.get("observationMetrics"));
         putIfPresent(highlights, "rollbackConcerns", rawEvidence.get("rollbackConcerns"));
+        putIfPresent(highlights, "agentRuntime", rawEvidence.get("agentRuntime"));
+        putIfPresent(highlights, "toolRuntime", rawEvidence.get("toolRuntime"));
         highlights.put("skillId", skillId);
         return highlights;
     }

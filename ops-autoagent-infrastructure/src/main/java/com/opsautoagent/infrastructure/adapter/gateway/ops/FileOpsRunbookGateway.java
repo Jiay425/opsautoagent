@@ -22,11 +22,14 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 @Slf4j
@@ -42,10 +45,32 @@ public class FileOpsRunbookGateway implements IOpsRunbookGateway {
     @Resource
     private OpsSensitiveDataMasker sensitiveDataMasker;
 
+    @Resource
+    private OpsRunbookMarkdownChunker markdownChunker;
+
+    @Resource
+    private RunbookCrossEncoderReranker crossEncoderReranker;
+
+    @Value("${ops.runbook.chunk.max-chars:1800}")
+    private int maxChunkChars;
+
     @Override
     public List<RunbookMatchEntity> search(IncidentCommandEntity command,
                                            List<RootCauseCandidateEntity> rootCauseCandidates,
                                            int topK) {
+        return search(command, rootCauseCandidates, topK, true);
+    }
+
+    List<RunbookMatchEntity> searchCandidates(IncidentCommandEntity command,
+                                              List<RootCauseCandidateEntity> rootCauseCandidates,
+                                              int topK) {
+        return search(command, rootCauseCandidates, topK, false);
+    }
+
+    private List<RunbookMatchEntity> search(IncidentCommandEntity command,
+                                            List<RootCauseCandidateEntity> rootCauseCandidates,
+                                            int topK,
+                                            boolean applyRerank) {
         long start = System.currentTimeMillis();
         Path runbookPath = Path.of(basePath);
         if (!Files.exists(runbookPath) || !Files.isDirectory(runbookPath)) {
@@ -56,23 +81,28 @@ public class FileOpsRunbookGateway implements IOpsRunbookGateway {
         }
 
         Set<String> queryTokens = buildQueryTokens(command, rootCauseCandidates);
-        List<RunbookMatchEntity> matches = new ArrayList<>();
+        List<ChunkDocument> corpus = new ArrayList<>();
 
         try (Stream<Path> files = Files.list(runbookPath)) {
             files.filter(path -> path.getFileName().toString().endsWith(".md"))
-                    .forEach(path -> addMatch(path, queryTokens, matches));
+                    .forEach(path -> addChunkDocuments(path, corpus));
         } catch (IOException e) {
             log.warn("Search ops runbooks failed. path={}", runbookPath.toAbsolutePath(), e);
             saveToolCallLog(command, runbookPath.toString(), queryTokens.toString(), List.of(),
                     System.currentTimeMillis() - start, false, e.getMessage());
             return List.of();
         }
+        List<RunbookMatchEntity> matches = bm25Search(corpus, queryTokens);
 
-        List<RunbookMatchEntity> result = matches.stream()
+        List<RunbookMatchEntity> candidates = matches.stream()
                 .filter(match -> match.getScore() > 0)
                 .sorted(Comparator.comparing(RunbookMatchEntity::getScore).reversed())
-                .limit(Math.max(1, topK))
+                .limit(Math.max(1, topK) * 5L)
                 .toList();
+        List<RunbookMatchEntity> result = applyRerank
+                ? crossEncoderReranker.rerank(String.join(" ", queryTokens), candidates, topK)
+                : candidates.stream().limit(Math.max(1, topK)).toList();
+        assignRanks(result);
         saveToolCallLog(command, runbookPath.toString(), queryTokens.toString(), result,
                 System.currentTimeMillis() - start, true, null);
         return result;
@@ -82,6 +112,19 @@ public class FileOpsRunbookGateway implements IOpsRunbookGateway {
     public List<RunbookMatchEntity> searchByEvidenceSignals(IncidentCommandEntity command,
                                                             List<EvidenceSignalEntity> evidenceSignals,
                                                             int topK) {
+        return searchByEvidenceSignals(command, evidenceSignals, topK, true);
+    }
+
+    List<RunbookMatchEntity> searchSignalCandidates(IncidentCommandEntity command,
+                                                    List<EvidenceSignalEntity> evidenceSignals,
+                                                    int topK) {
+        return searchByEvidenceSignals(command, evidenceSignals, topK, false);
+    }
+
+    private List<RunbookMatchEntity> searchByEvidenceSignals(IncidentCommandEntity command,
+                                                             List<EvidenceSignalEntity> evidenceSignals,
+                                                             int topK,
+                                                             boolean applyRerank) {
         long start = System.currentTimeMillis();
         Path runbookPath = Path.of(basePath);
         if (!Files.exists(runbookPath) || !Files.isDirectory(runbookPath)) {
@@ -92,54 +135,144 @@ public class FileOpsRunbookGateway implements IOpsRunbookGateway {
         }
 
         Set<String> queryTokens = buildSignalQueryTokens(command, evidenceSignals);
-        List<RunbookMatchEntity> matches = new ArrayList<>();
+        List<ChunkDocument> corpus = new ArrayList<>();
 
         try (Stream<Path> files = Files.list(runbookPath)) {
             files.filter(path -> path.getFileName().toString().endsWith(".md"))
-                    .forEach(path -> addMatch(path, queryTokens, matches));
+                    .forEach(path -> addChunkDocuments(path, corpus));
         } catch (IOException e) {
             log.warn("Search ops runbooks by evidence signals failed. path={}", runbookPath.toAbsolutePath(), e);
             saveToolCallLog(command, runbookPath.toString(), queryTokens.toString(), List.of(),
                     System.currentTimeMillis() - start, false, e.getMessage());
             return List.of();
         }
+        List<RunbookMatchEntity> matches = bm25Search(corpus, queryTokens);
 
-        List<RunbookMatchEntity> result = matches.stream()
+        List<RunbookMatchEntity> candidates = matches.stream()
                 .filter(match -> match.getScore() > 0)
                 .sorted(Comparator.comparing(RunbookMatchEntity::getScore).reversed())
-                .limit(Math.max(1, topK))
+                .limit(Math.max(1, topK) * 5L)
                 .toList();
+        List<RunbookMatchEntity> result = applyRerank
+                ? crossEncoderReranker.rerank(String.join(" ", queryTokens), candidates, topK)
+                : candidates.stream().limit(Math.max(1, topK)).toList();
+        assignRanks(result);
         saveToolCallLog(command, runbookPath.toString(), queryTokens.toString(), result,
                 System.currentTimeMillis() - start, true, null);
         return result;
     }
 
-    private void addMatch(Path path, Set<String> queryTokens, List<RunbookMatchEntity> matches) {
+    private void addChunkDocuments(Path path, List<ChunkDocument> corpus) {
         try {
             String content = Files.readString(path, StandardCharsets.UTF_8);
-            String lowerContent = content.toLowerCase(Locale.ROOT);
-            int score = 0;
-            for (String token : queryTokens) {
-                if (lowerContent.contains(token)) {
-                    score += token.length() > 4 ? 8 : 4;
-                }
+            OpsRunbookMarkdownChunker.RunbookDocument document = markdownChunker.parse(path, content, maxChunkChars);
+            for (OpsRunbookMarkdownChunker.RunbookChunk chunk : document.chunks()) {
+                String weightedText = String.join("\n",
+                        document.runbookId(),
+                        document.title(),
+                        document.category(),
+                        chunk.sectionTitle(),
+                        chunk.content());
+                corpus.add(new ChunkDocument(document, chunk, termFrequencies(tokenize(weightedText))));
             }
-            if (score <= 0) {
-                return;
-            }
-
-            matches.add(RunbookMatchEntity.builder()
-                    .runbookId(stripExtension(path.getFileName().toString()))
-                    .title(extractTitle(content, path))
-                    .category(resolveCategory(path.getFileName().toString(), content))
-                    .score(Math.min(score, 100))
-                    .path(path.toString())
-                    .summary(extractSummary(content))
-                    .content(abbreviate(content, 2400))
-                    .build());
         } catch (IOException e) {
             log.warn("Read ops runbook failed. path={}", path.toAbsolutePath(), e);
         }
+    }
+
+    private List<RunbookMatchEntity> bm25Search(List<ChunkDocument> corpus, Set<String> queryTokens) {
+        if (corpus == null || corpus.isEmpty() || queryTokens == null || queryTokens.isEmpty()) {
+            return List.of();
+        }
+        Map<String, Integer> documentFrequency = new HashMap<>();
+        for (ChunkDocument doc : corpus) {
+            for (String term : doc.termFrequency().keySet()) {
+                documentFrequency.merge(term, 1, Integer::sum);
+            }
+        }
+        double avgDocLength = corpus.stream()
+                .mapToInt(doc -> doc.termFrequency().values().stream().mapToInt(Integer::intValue).sum())
+                .average()
+                .orElse(1D);
+        int corpusSize = corpus.size();
+        List<RunbookMatchEntity> matches = new ArrayList<>();
+        for (ChunkDocument doc : corpus) {
+            Bm25Score score = bm25(doc, queryTokens, documentFrequency, corpusSize, avgDocLength);
+            if (score.score() <= 0D) {
+                continue;
+            }
+            int normalized = Math.min(100, Math.max(1, (int) Math.round(score.score() * 12)));
+            matches.add(RunbookMatchEntity.builder()
+                    .runbookId(doc.document().runbookId())
+                    .title(doc.document().title() + " / " + doc.chunk().sectionTitle())
+                    .category(doc.document().category())
+                    .score(normalized)
+                    .keywordScore(normalized)
+                    .bm25Score(normalized)
+                    .hybridScore(normalized)
+                    .retrievalMode("BM25_CHUNK")
+                    .lexicalBoostScore(0)
+                    .rankExplanation("bm25Score=" + normalized
+                            + ", rawBm25=" + String.format(Locale.ROOT, "%.4f", score.score())
+                            + ", section=" + doc.chunk().sectionTitle()
+                            + ", hitTerms=" + score.hitTerms().stream().limit(12).toList())
+                    .path(doc.document().path())
+                    .summary(extractSummary(doc.chunk().content()))
+                    .content(abbreviate(doc.chunk().content(), 1800))
+                    .chunkId(doc.chunk().chunkId())
+                    .chunkIndex(doc.chunk().chunkIndex())
+                    .chunkCount(doc.chunk().chunkCount())
+                    .documentHash(doc.document().documentHash())
+                    .documentVersion(doc.document().documentVersion())
+                    .build());
+        }
+        return matches.stream()
+                .sorted(Comparator.comparing(RunbookMatchEntity::getBm25Score,
+                        Comparator.nullsLast(Comparator.reverseOrder())))
+                .toList();
+    }
+
+    private Bm25Score bm25(ChunkDocument doc,
+                           Set<String> queryTerms,
+                           Map<String, Integer> documentFrequency,
+                           int corpusSize,
+                           double avgDocLength) {
+        double k1 = 1.5D;
+        double b = 0.75D;
+        int docLength = doc.termFrequency().values().stream().mapToInt(Integer::intValue).sum();
+        double score = 0D;
+        List<String> hitTerms = new ArrayList<>();
+        for (String term : queryTerms) {
+            int tf = doc.termFrequency().getOrDefault(term, 0);
+            if (tf <= 0) {
+                continue;
+            }
+            int df = documentFrequency.getOrDefault(term, 0);
+            double idf = Math.log(1D + (corpusSize - df + 0.5D) / (df + 0.5D));
+            double denominator = tf + k1 * (1D - b + b * docLength / Math.max(1D, avgDocLength));
+            score += idf * (tf * (k1 + 1D)) / denominator;
+            hitTerms.add(term);
+        }
+        return new Bm25Score(score, hitTerms);
+    }
+
+    private Map<String, Integer> termFrequencies(List<String> tokens) {
+        return tokens.stream().collect(Collectors.toMap(token -> token, ignored -> 1, Integer::sum));
+    }
+
+    private List<String> tokenize(String text) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+        String normalized = text.toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9_\\p{IsHan}]+", " ");
+        List<String> tokens = new ArrayList<>();
+        for (String token : normalized.split("\\s+")) {
+            if (token.length() >= 2) {
+                tokens.add(token);
+            }
+        }
+        return tokens;
     }
 
     private Set<String> buildQueryTokens(IncidentCommandEntity command,
@@ -188,15 +321,6 @@ public class FileOpsRunbookGateway implements IOpsRunbookGateway {
         }
     }
 
-    private String extractTitle(String content, Path path) {
-        for (String line : content.split("\\R")) {
-            if (line.startsWith("# ")) {
-                return line.substring(2).trim();
-            }
-        }
-        return stripExtension(path.getFileName().toString());
-    }
-
     private String extractSummary(String content) {
         StringBuilder summary = new StringBuilder();
         for (String line : content.split("\\R")) {
@@ -212,39 +336,20 @@ public class FileOpsRunbookGateway implements IOpsRunbookGateway {
         return abbreviate(summary.toString().trim(), 600);
     }
 
-    private String resolveCategory(String fileName, String content) {
-        String text = (fileName + "\n" + content).toLowerCase(Locale.ROOT);
-        if (text.contains("hikari") || text.contains("jdbc") || text.contains("database")) {
-            return "database";
-        }
-        if (text.contains("redis")) {
-            return "redis";
-        }
-        if (text.contains("full gc") || text.contains("outofmemory")) {
-            return "jvm";
-        }
-        if (text.contains("dubbo") || text.contains("rpc") || text.contains("downstream")) {
-            return "downstream";
-        }
-        if (text.contains("mq") || text.contains("kafka") || text.contains("rocketmq")) {
-            return "mq";
-        }
-        if (text.contains("500") || text.contains("exception")) {
-            return "application";
-        }
-        return "general";
-    }
-
-    private String stripExtension(String fileName) {
-        int index = fileName.lastIndexOf('.');
-        return index > 0 ? fileName.substring(0, index) : fileName;
-    }
-
     private String abbreviate(String value, int maxLength) {
         if (value == null) {
             return "";
         }
         return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
+    }
+
+    private void assignRanks(List<RunbookMatchEntity> result) {
+        if (result == null) {
+            return;
+        }
+        for (int i = 0; i < result.size(); i++) {
+            result.get(i).setRank(i + 1);
+        }
     }
 
     private void saveToolCallLog(IncidentCommandEntity command,
@@ -279,6 +384,14 @@ public class FileOpsRunbookGateway implements IOpsRunbookGateway {
 
     private String mask(String value) {
         return sensitiveDataMasker.mask(value);
+    }
+
+    private record ChunkDocument(OpsRunbookMarkdownChunker.RunbookDocument document,
+                                 OpsRunbookMarkdownChunker.RunbookChunk chunk,
+                                 Map<String, Integer> termFrequency) {
+    }
+
+    private record Bm25Score(double score, List<String> hitTerms) {
     }
 
 }

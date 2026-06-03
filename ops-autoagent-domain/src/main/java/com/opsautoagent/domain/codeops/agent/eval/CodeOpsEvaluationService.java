@@ -160,7 +160,7 @@ public class CodeOpsEvaluationService {
 
         boolean success = errorMessage == null
                 && task != null
-                && "COMPLETED".equals(task.getStatus())
+                && isSuccessfulTaskStatus(task.getStatus())
                 && !hasFailedRepairOrTestStep(steps)
                 && skillCoverage.compareTo(BigDecimal.ONE) == 0
                 && evidenceCoverage.compareTo(BigDecimal.valueOf(0.5)) >= 0
@@ -208,6 +208,10 @@ public class CodeOpsEvaluationService {
             return false;
         }
         return lastStepFailed(steps, "bug_fix") || lastStepFailed(steps, "test_verification");
+    }
+
+    private boolean isSuccessfulTaskStatus(String status) {
+        return "COMPLETED".equals(status) || "WAITING_APPROVAL".equals(status);
     }
 
     private boolean lastStepFailed(List<EngineeringTaskStepEntity> steps, String skillId) {

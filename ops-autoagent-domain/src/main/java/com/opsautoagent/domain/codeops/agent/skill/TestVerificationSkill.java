@@ -87,9 +87,13 @@ public class TestVerificationSkill implements EngineeringSkill {
         RepoDiffContextEntity diffContext = toolGateway.loadDiffContext(task.getRepository(), task.getChangeRef(), task.getContext());
         Map<String, Object> codeLocalization = skillOutput(task, RepoUnderstandingSkill.SKILL_ID);
         Map<String, Object> patchGeneration = skillOutput(task, BugFixSkill.SKILL_ID);
+        String verificationRepositoryPath = firstNonBlank(
+                objectString(patchGeneration.get("sandboxRepositoryPath")),
+                objectString(patchGeneration.get("repositoryPath")),
+                value(diffContext.getRepositoryPath(), ""));
         List<String> relatedTestFiles = resolveRelatedTestFiles(task, diffContext, codeLocalization);
         TestVerificationPlanEntity baselinePlan = TestVerificationPlanEntity.builder()
-                .repositoryPath(value(diffContext.getRepositoryPath(), ""))
+                .repositoryPath(verificationRepositoryPath)
                 .changeRef(value(diffContext.getChangeRef(), "working_tree"))
                 .changedFiles(list(diffContext.getChangedFiles()))
                 .relatedTestFiles(relatedTestFiles)
@@ -134,7 +138,7 @@ public class TestVerificationSkill implements EngineeringSkill {
                     .build());
             plan = agentOutput.getPlan() == null ? baselinePlan : agentOutput.getPlan();
         }
-        List<CodeSnippetEntity> testSnippets = loadTestSnippets(task, plan.getRelatedTestFiles());
+        List<CodeSnippetEntity> testSnippets = loadTestSnippets(plan.getRepositoryPath(), plan.getRelatedTestFiles());
         CodeOpsTestPatchAgentOutput testPatch = mergedRepairAndTestAgent
                 ? mergedRepairTestPatch(patchGeneration)
                 : testPatchAgentService.proposeTestPatch(CodeOpsTestPatchAgentInput.builder()
@@ -174,6 +178,9 @@ public class TestVerificationSkill implements EngineeringSkill {
         Map<String, Object> rawOutput = new LinkedHashMap<>();
         rawOutput.put("phase", "PHASE_5_LLM_TEST_VERIFICATION");
         rawOutput.put("repositoryPath", plan.getRepositoryPath());
+        rawOutput.put("originalRepositoryPath", value(diffContext.getRepositoryPath(), ""));
+        rawOutput.put("sandboxRepositoryPath", objectString(patchGeneration.get("sandboxRepositoryPath")));
+        rawOutput.put("testExecutionRepositoryPath", plan.getRepositoryPath());
         rawOutput.put("changeRef", plan.getChangeRef());
         rawOutput.put("changedFiles", plan.getChangedFiles());
         rawOutput.put("relatedTestFiles", plan.getRelatedTestFiles());
@@ -305,7 +312,7 @@ public class TestVerificationSkill implements EngineeringSkill {
                     continue;
                 }
                 EngineeringToolGateway.CommandResult result = toolGateway.runMavenCommand(
-                        task.getRepository(), args, testExecutionTimeoutMs);
+                        plan.getRepositoryPath(), args, testExecutionTimeoutMs);
                 results.add("command=" + String.join(" ", result.command())
                         + ", success=" + result.success()
                         + ", exitCode=" + result.exitCode()
@@ -328,7 +335,7 @@ public class TestVerificationSkill implements EngineeringSkill {
             args.add("compile");
         }
         EngineeringToolGateway.CommandResult result = toolGateway.runMavenCommand(
-                task.getRepository(), args, testExecutionTimeoutMs);
+                plan.getRepositoryPath(), args, testExecutionTimeoutMs);
         results.add("command=" + String.join(" ", result.command())
                 + ", success=" + result.success()
                 + ", exitCode=" + result.exitCode()
@@ -652,10 +659,10 @@ public class TestVerificationSkill implements EngineeringSkill {
         return matches;
     }
 
-    private List<CodeSnippetEntity> loadTestSnippets(EngineeringTaskEntity task, List<String> relatedTestFiles) {
+    private List<CodeSnippetEntity> loadTestSnippets(String repositoryPath, List<String> relatedTestFiles) {
         List<CodeSnippetEntity> snippets = new ArrayList<>();
         for (String testFile : list(relatedTestFiles)) {
-            snippets.add(toolGateway.readFileSnippet(task.getRepository(), testFile, 1, 80));
+            snippets.add(toolGateway.readFileSnippet(repositoryPath, testFile, 1, 80));
             if (snippets.size() >= 4) {
                 break;
             }
@@ -746,6 +753,18 @@ public class TestVerificationSkill implements EngineeringSkill {
 
     private String value(String value, String defaultValue) {
         return value == null || value.trim().isEmpty() ? defaultValue : value;
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (!isBlank(value)) {
+                return value;
+            }
+        }
+        return "";
     }
 
     private boolean isBlank(String value) {

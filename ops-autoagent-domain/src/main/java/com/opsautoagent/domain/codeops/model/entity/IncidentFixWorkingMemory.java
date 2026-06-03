@@ -49,6 +49,8 @@ public class IncidentFixWorkingMemory {
 
     private Map<String, Object> finalReview;
 
+    private Map<String, Object> safetySummary;
+
     private List<Map<String, Object>> agentTrace;
 
     private LocalDateTime createTime;
@@ -78,6 +80,7 @@ public class IncidentFixWorkingMemory {
                 .testVerification(new LinkedHashMap<>())
                 .releaseRisk(new LinkedHashMap<>())
                 .finalReview(new LinkedHashMap<>())
+                .safetySummary(new LinkedHashMap<>())
                 .agentTrace(new ArrayList<>())
                 .createTime(LocalDateTime.now())
                 .updateTime(LocalDateTime.now())
@@ -93,6 +96,8 @@ public class IncidentFixWorkingMemory {
                 if (hints instanceof List<?> hintList) {
                     codeHints = new ArrayList<>(hintList);
                 }
+                updateSafetySummary("evidenceCoverage", output.get("evidenceCoverage"));
+                updateSafetySummary("evidenceProvenance", output.get("evidenceProvenance"));
             }
             case "repo_understanding" -> {
                 codeLocalization = output;
@@ -103,9 +108,19 @@ public class IncidentFixWorkingMemory {
             case "bug_fix" -> {
                 patchGeneration = output;
                 rootCauseAnalysis = extractRootCause(output);
+                updateSafetySummary("patchSandbox", output.get("patchSandbox"));
+                updateSafetySummary("patchQuality", output.get("patchQuality"));
+                updateSafetySummary("patchDiffAnalysis", output.get("patchDiffAnalysis"));
             }
-            case "test_verification" -> testVerification = output;
-            case "release_risk", "release_risk_analysis" -> releaseRisk = output;
+            case "test_verification" -> {
+                testVerification = output;
+                updateSafetySummary("testExecutionRepositoryPath", output.get("testExecutionRepositoryPath"));
+                updateSafetySummary("testExecutionResults", output.get("testExecutionResults"));
+            }
+            case "release_risk", "release_risk_analysis" -> {
+                releaseRisk = output;
+                updateSafetySummary("releaseRisk", output.get("releaseRiskReport"));
+            }
             default -> finalReview.put(skillId, output);
         }
         appendTrace(skillId, output);
@@ -144,9 +159,23 @@ public class IncidentFixWorkingMemory {
         putIfPresent(trace, "confidence", output.get("confidence"));
         putIfPresent(trace, "targetFiles", output.get("targetFiles"));
         putIfPresent(trace, "codeHints", output.get("codeHints"));
+        putIfPresent(trace, "evidenceCoverage", output.get("evidenceCoverage"));
+        putIfPresent(trace, "patchSandbox", output.get("patchSandbox"));
+        putIfPresent(trace, "patchQuality", output.get("patchQuality"));
+        putIfPresent(trace, "testExecutionRepositoryPath", output.get("testExecutionRepositoryPath"));
         putIfPresent(trace, "recommendedTests", output.get("recommendedTests"));
         putIfPresent(trace, "riskPoints", output.get("riskPoints"));
         agentTrace.add(trace);
+    }
+
+    private void updateSafetySummary(String key, Object value) {
+        if (value == null) {
+            return;
+        }
+        if (safetySummary == null) {
+            safetySummary = new LinkedHashMap<>();
+        }
+        safetySummary.put(key, value);
     }
 
     private void putIfPresent(Map<String, Object> target, String key, Object value) {

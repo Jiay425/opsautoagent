@@ -56,13 +56,17 @@ public class CodeOpsCompatibleChatClient {
     }
 
     public String call(String prompt, String modelOverride) {
+        return call(prompt, modelOverride, null);
+    }
+
+    public String call(String prompt, String modelOverride, Integer maxTokensOverride) {
         if (!available()) throw new IllegalStateException(unavailableReason());
 
         JSONObject request = new JSONObject();
         request.put("model", modelOverride != null && !modelOverride.isBlank() ? modelOverride : model);
         request.put("messages", List.of(message("user", prompt)));
         request.put("temperature", temperature);
-        request.put("max_tokens", maxTokens);
+        request.put("max_tokens", maxTokensOverride != null && maxTokensOverride > 0 ? maxTokensOverride : maxTokens);
         request.put("stream", false);
 
         String responseText;

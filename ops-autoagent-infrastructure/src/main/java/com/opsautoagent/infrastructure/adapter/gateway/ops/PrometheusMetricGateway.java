@@ -69,30 +69,37 @@ public class PrometheusMetricGateway extends AbstractOpsHttpGateway implements I
                             "Configure ops.integrations.prometheus.base-url to query QPS, RT, error rate, JVM, CPU, thread, GC, and DB pool metrics.",
                             "The workflow will still use logs, traces, and user context for preliminary analysis."))
                     .rawData("")
+                    .sourceMetadata(Map.of(
+                            "sourceType", "PROMETHEUS",
+                            "sourceMode", "UNCONFIGURED",
+                            "baseUrl", value(baseUrl),
+                            "mcpEnabled", canUseMcp(),
+                            "fixtureFallback", false))
                     .build();
         }
 
         List<String> observations = new ArrayList<>();
         StringBuilder rawData = new StringBuilder();
+        List<Map<String, String>> promQlQueries = new ArrayList<>();
 
-        query(command, "traffic_qps", qps(command.getServiceName()), observations, rawData);
-        query(command, "http_5xx_qps", errorQps(command.getServiceName()), observations, rawData);
-        query(command, "http_5xx_rate_percent", errorRatePercent(command.getServiceName()), observations, rawData);
-        query(command, "http_avg_latency_seconds", avgLatency(command.getServiceName()), observations, rawData);
-        query(command, "http_p95_latency_seconds", latencyQuantile(command.getServiceName(), "0.95"), observations, rawData);
-        query(command, "http_p99_latency_seconds", latencyQuantile(command.getServiceName(), "0.99"), observations, rawData);
-        query(command, "process_cpu_usage", processCpu(command.getServiceName()), observations, rawData);
-        query(command, "system_cpu_usage", systemCpu(command.getServiceName()), observations, rawData);
-        query(command, "jvm_memory_used_bytes", jvmMemory(command.getServiceName()), observations, rawData);
-        query(command, "jvm_threads_live", jvmThreads(command.getServiceName()), observations, rawData);
-        query(command, "jvm_gc_pause_avg_seconds", gcPauseAvg(command.getServiceName()), observations, rawData);
-        query(command, "tomcat_threads_busy", tomcatThreadsBusy(command.getServiceName()), observations, rawData);
-        query(command, "executor_active_threads", executorActiveThreads(command.getServiceName()), observations, rawData);
-        query(command, "hikari_connections_active", hikariActive(command.getServiceName()), observations, rawData);
-        query(command, "hikari_connections_max", hikariMax(command.getServiceName()), observations, rawData);
-        query(command, "hikari_connections_usage_percent", hikariUsagePercent(command.getServiceName()), observations, rawData);
-        query(command, "hikari_connections_pending", hikariPending(command.getServiceName()), observations, rawData);
-        query(command, "hikari_connection_timeout_total", hikariTimeout(command.getServiceName()), observations, rawData);
+        query(command, "traffic_qps", qps(command.getServiceName()), observations, rawData, promQlQueries);
+        query(command, "http_5xx_qps", errorQps(command.getServiceName()), observations, rawData, promQlQueries);
+        query(command, "http_5xx_rate_percent", errorRatePercent(command.getServiceName()), observations, rawData, promQlQueries);
+        query(command, "http_avg_latency_seconds", avgLatency(command.getServiceName()), observations, rawData, promQlQueries);
+        query(command, "http_p95_latency_seconds", latencyQuantile(command.getServiceName(), "0.95"), observations, rawData, promQlQueries);
+        query(command, "http_p99_latency_seconds", latencyQuantile(command.getServiceName(), "0.99"), observations, rawData, promQlQueries);
+        query(command, "process_cpu_usage", processCpu(command.getServiceName()), observations, rawData, promQlQueries);
+        query(command, "system_cpu_usage", systemCpu(command.getServiceName()), observations, rawData, promQlQueries);
+        query(command, "jvm_memory_used_bytes", jvmMemory(command.getServiceName()), observations, rawData, promQlQueries);
+        query(command, "jvm_threads_live", jvmThreads(command.getServiceName()), observations, rawData, promQlQueries);
+        query(command, "jvm_gc_pause_avg_seconds", gcPauseAvg(command.getServiceName()), observations, rawData, promQlQueries);
+        query(command, "tomcat_threads_busy", tomcatThreadsBusy(command.getServiceName()), observations, rawData, promQlQueries);
+        query(command, "executor_active_threads", executorActiveThreads(command.getServiceName()), observations, rawData, promQlQueries);
+        query(command, "hikari_connections_active", hikariActive(command.getServiceName()), observations, rawData, promQlQueries);
+        query(command, "hikari_connections_max", hikariMax(command.getServiceName()), observations, rawData, promQlQueries);
+        query(command, "hikari_connections_usage_percent", hikariUsagePercent(command.getServiceName()), observations, rawData, promQlQueries);
+        query(command, "hikari_connections_pending", hikariPending(command.getServiceName()), observations, rawData, promQlQueries);
+        query(command, "hikari_connection_timeout_total", hikariTimeout(command.getServiceName()), observations, rawData, promQlQueries);
 
         return MetricEvidenceEntity.builder()
                 .source("prometheus")
@@ -100,10 +107,20 @@ public class PrometheusMetricGateway extends AbstractOpsHttpGateway implements I
                 .summary("Collected Prometheus metrics and converted them into readable observations for traffic, 5xx, latency, CPU, JVM, thread, GC, Tomcat/executor, and Hikari pool dimensions.")
                 .observations(observations)
                 .rawData(abbreviate(rawData.toString(), 12000))
+                .sourceMetadata(Map.of(
+                        "sourceType", "PROMETHEUS",
+                        "sourceMode", canUseMcp() ? "REAL_MCP_OR_HTTP" : "REAL_HTTP",
+                        "baseUrl", value(baseUrl),
+                        "mcpEnabled", canUseMcp(),
+                        "timeWindow", command.getStartTime() + " ~ " + command.getEndTime(),
+                        "queries", promQlQueries,
+                        "fixtureFallback", false))
                 .build();
     }
 
-    private void query(IncidentCommandEntity command, String metricName, String promQl, List<String> observations, StringBuilder rawData) {
+    private void query(IncidentCommandEntity command, String metricName, String promQl, List<String> observations,
+                       StringBuilder rawData, List<Map<String, String>> promQlQueries) {
+        promQlQueries.add(Map.of("metricName", metricName, "promQl", promQl));
         try {
             String response = queryByMcp(command, metricName, promQl);
             if (response == null) {
@@ -203,6 +220,10 @@ public class PrometheusMetricGateway extends AbstractOpsHttpGateway implements I
         } catch (Exception ignored) {
             return 0D;
         }
+    }
+
+    private String value(String value) {
+        return value == null ? "" : value;
     }
 
     private record MetricSnapshot(String metricName,

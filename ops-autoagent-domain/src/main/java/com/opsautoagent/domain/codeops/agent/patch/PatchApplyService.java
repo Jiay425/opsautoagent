@@ -2,6 +2,7 @@ package com.opsautoagent.domain.codeops.agent.patch;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import com.opsautoagent.domain.codeops.agent.security.AgentPermissionPolicy;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -21,9 +22,12 @@ public class PatchApplyService {
     private static final long DEFAULT_TIMEOUT_MS = 30_000L;
 
     private final PatchValidationService patchValidationService;
+    private final AgentPermissionPolicy permissionPolicy;
 
-    public PatchApplyService(PatchValidationService patchValidationService) {
+    public PatchApplyService(PatchValidationService patchValidationService,
+                             AgentPermissionPolicy permissionPolicy) {
         this.patchValidationService = patchValidationService;
+        this.permissionPolicy = permissionPolicy;
     }
 
     public PatchApplyResult apply(String repositoryPath, String unifiedDiffPatch) {
@@ -39,6 +43,22 @@ public class PatchApplyService {
                     .exitCode(-1)
                     .output("")
                     .errorMessage("patch validation failed: " + String.join("; ", validation.getErrors()))
+                    .build();
+        }
+        List<String> permissionErrors = validation.getTouchedFiles().stream()
+                .filter(file -> !permissionPolicy.isWriteAllowed(repositoryPath, file))
+                .map(file -> "write path not allowed: " + file)
+                .toList();
+        if (!permissionErrors.isEmpty()) {
+            return PatchApplyResult.builder()
+                    .requested(true)
+                    .applied(false)
+                    .checkPassed(false)
+                    .repositoryPath(value(repositoryPath))
+                    .command(List.of())
+                    .exitCode(-1)
+                    .output("")
+                    .errorMessage("PERMISSION_DENIED: " + String.join("; ", permissionErrors))
                     .build();
         }
         Path repoRoot = Path.of(repositoryPath).toAbsolutePath().normalize();

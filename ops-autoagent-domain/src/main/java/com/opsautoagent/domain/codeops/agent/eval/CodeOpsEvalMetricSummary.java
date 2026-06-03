@@ -19,6 +19,9 @@ public class CodeOpsEvalMetricSummary {
     private BigDecimal testPassRate;
     private BigDecimal reflectionRecoveryRate;
     private BigDecimal noCodeFixAccuracy;
+    private BigDecimal realEvidenceCoverageRate;
+    private BigDecimal patchStaticSafetyRate;
+    private BigDecimal patchSandboxIsolationRate;
 
     public static CodeOpsEvalMetricSummary empty() {
         return builder()
@@ -28,6 +31,9 @@ public class CodeOpsEvalMetricSummary {
                 .testPassRate(BigDecimal.ZERO)
                 .reflectionRecoveryRate(BigDecimal.ZERO)
                 .noCodeFixAccuracy(BigDecimal.ZERO)
+                .realEvidenceCoverageRate(BigDecimal.ZERO)
+                .patchStaticSafetyRate(BigDecimal.ZERO)
+                .patchSandboxIsolationRate(BigDecimal.ZERO)
                 .build();
     }
 }

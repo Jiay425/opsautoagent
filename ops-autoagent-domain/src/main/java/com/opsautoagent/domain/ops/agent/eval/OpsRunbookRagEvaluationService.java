@@ -13,6 +13,9 @@ import org.springframework.stereotype.Service;
 import jakarta.annotation.Resource;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -70,7 +73,9 @@ public class OpsRunbookRagEvaluationService {
             runs.add(run);
             saveMetrics(batchId, mode, run);
         }
-        return summarize(batchId, mode, runs);
+        OpsRunbookRagEvaluationSummary summary = summarize(batchId, mode, runs);
+        writeReportArtifacts(summary);
+        return summary;
     }
 
     private OpsRunbookRagEvalRun runCase(String batchId,
@@ -104,6 +109,7 @@ public class OpsRunbookRagEvaluationService {
                     .rank(rank)
                     .reciprocalRank(reciprocalRank)
                     .latencyMs(latencyMs)
+                    .failureReason(top3Hit == 1 ? "" : failureReason(evalCase, matches, rank))
                     .build();
         } catch (Exception e) {
             log.warn("Runbook RAG evaluation case failed. batchId={}, mode={}, caseId={}", batchId, mode, evalCase.getCaseId(), e);
@@ -120,6 +126,7 @@ public class OpsRunbookRagEvaluationService {
                     .rank(0)
                     .reciprocalRank(BigDecimal.ZERO)
                     .latencyMs(System.currentTimeMillis() - start)
+                    .failureReason("exception during retrieval")
                     .errorMessage(summarizeException(e))
                     .build();
         }
@@ -215,6 +222,7 @@ public class OpsRunbookRagEvaluationService {
                 .top5Recall(top5.divide(denominator, 4, RoundingMode.HALF_UP))
                 .meanReciprocalRank(mrr.divide(denominator, 4, RoundingMode.HALF_UP))
                 .averageLatencyMs(latency.divide(denominator, 4, RoundingMode.HALF_UP))
+                .rootCauseHitRate(top3.divide(denominator, 4, RoundingMode.HALF_UP))
                 .runs(runs)
                 .build();
     }
@@ -231,7 +239,102 @@ public class OpsRunbookRagEvaluationService {
                 .top5Recall(summary.getTop5Recall())
                 .meanReciprocalRank(summary.getMeanReciprocalRank())
                 .averageLatencyMs(summary.getAverageLatencyMs())
+                .rootCauseHitRate(summary.getRootCauseHitRate())
+                .reportJsonPath(summary.getReportJsonPath())
+                .reportMarkdownPath(summary.getReportMarkdownPath())
+                .failureCasesPath(summary.getFailureCasesPath())
                 .build();
+    }
+
+    private String failureReason(OpsRunbookRagEvalCase evalCase, List<RunbookMatchEntity> matches, int rank) {
+        if (matches == null || matches.isEmpty()) {
+            return "no runbook returned; expected=" + evalCase.getExpectedRunbookIds();
+        }
+        if (rank == 0) {
+            return "expected runbook not retrieved in topK; expected=" + evalCase.getExpectedRunbookIds()
+                    + ", retrieved=" + matches.stream().map(RunbookMatchEntity::getRunbookId).toList();
+        }
+        return "expected runbook rank=" + rank + " is outside Top3; expected=" + evalCase.getExpectedRunbookIds();
+    }
+
+    private void writeReportArtifacts(OpsRunbookRagEvaluationSummary summary) {
+        try {
+            Path dir = Path.of("data", "runbook-rag-eval", summary.getBatchId());
+            Files.createDirectories(dir);
+            Path jsonPath = dir.resolve("report.json");
+            Path markdownPath = dir.resolve("report.md");
+            Path failuresPath = dir.resolve("failures.json");
+            List<OpsRunbookRagEvalRun> failures = summary.getRuns() == null ? List.of()
+                    : summary.getRuns().stream().filter(run -> !"SUCCESS".equals(run.getStatus())).toList();
+            summary.setReportJsonPath(jsonPath.toString());
+            summary.setReportMarkdownPath(markdownPath.toString());
+            summary.setFailureCasesPath(failuresPath.toString());
+            Files.writeString(jsonPath, JSON.toJSONString(summary, true), StandardCharsets.UTF_8);
+            Files.writeString(markdownPath, markdown(summary, failures), StandardCharsets.UTF_8);
+            Files.writeString(failuresPath, JSON.toJSONString(failures, true), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            log.warn("Write Runbook RAG eval report failed. batchId={}", summary == null ? "" : summary.getBatchId(), e);
+        }
+    }
+
+    private String markdown(OpsRunbookRagEvaluationSummary summary, List<OpsRunbookRagEvalRun> failures) {
+        StringBuilder md = new StringBuilder();
+        md.append("# Runbook RAG Evaluation Report\n\n");
+        md.append("- batchId: ").append(summary.getBatchId()).append("\n");
+        md.append("- mode: ").append(summary.getMode()).append("\n");
+        md.append("- totalCases: ").append(summary.getTotalCases()).append("\n");
+        md.append("- successCases: ").append(summary.getSuccessCases()).append("\n");
+        md.append("- failedCases: ").append(summary.getFailedCases()).append("\n");
+        md.append("- Top1 Recall: ").append(summary.getTop1Recall()).append("\n");
+        md.append("- Top3 Recall: ").append(summary.getTop3Recall()).append("\n");
+        md.append("- Top5 Recall: ").append(summary.getTop5Recall()).append("\n");
+        md.append("- MRR: ").append(summary.getMeanReciprocalRank()).append("\n");
+        md.append("- rootCauseHitRate: ").append(summary.getRootCauseHitRate()).append("\n");
+        md.append("- averageLatencyMs: ").append(summary.getAverageLatencyMs()).append("\n\n");
+        md.append("## Cases\n\n");
+        md.append("| caseId | status | rank | expected | topRetrieved | reason |\n");
+        md.append("|---|---:|---:|---|---|---|\n");
+        if (summary.getRuns() != null) {
+            for (OpsRunbookRagEvalRun run : summary.getRuns()) {
+                md.append("| ").append(run.getCaseId())
+                        .append(" | ").append(run.getStatus())
+                        .append(" | ").append(run.getRank())
+                        .append(" | ").append(run.getExpectedRunbookIds())
+                        .append(" | ").append(topRetrieved(run))
+                        .append(" | ").append(escapeMarkdown(value(run.getFailureReason())))
+                        .append(" |\n");
+            }
+        }
+        md.append("\n## Failure Samples\n\n");
+        if (failures == null || failures.isEmpty()) {
+            md.append("No failed samples.\n");
+        } else {
+            for (OpsRunbookRagEvalRun failure : failures) {
+                md.append("- ").append(failure.getCaseId()).append(": ")
+                        .append(value(failure.getFailureReason())).append("\n");
+            }
+        }
+        return md.toString();
+    }
+
+    private String topRetrieved(OpsRunbookRagEvalRun run) {
+        if (run.getRetrievedRunbooks() == null || run.getRetrievedRunbooks().isEmpty()) {
+            return "";
+        }
+        return run.getRetrievedRunbooks().stream()
+                .limit(3)
+                .map(match -> value(match.getRunbookId()) + "(" + value(match.getRetrievalMode()) + ","
+                        + value(match.getHybridScore()) + ")")
+                .toList()
+                .toString();
+    }
+
+    private String escapeMarkdown(String value) {
+        return value == null ? "" : value.replace("|", "\\|").replace("\n", " ");
+    }
+
+    private String value(Object value) {
+        return value == null ? "" : String.valueOf(value);
     }
 
     private List<OpsRunbookRagEvalCase> cases() {
@@ -337,6 +440,32 @@ public class OpsRunbookRagEvaluationService {
                         List.of("evidence-sufficiency-policy", "observability-gap"),
                         signal("prometheus", "metric", "http_5xx_rate_percent", "ANOMALY", "only symptom metric exists", "5xx symptom only"),
                         signal("elk", "log", "root_cause_log", "NO_ANOMALY", "queried but no root cause log", "NO_ANOMALY"))
+                ,
+                evalCase("rag-payment-callback-idempotency", "Payment callback idempotency",
+                        "payment callback retry storm, duplicate notify and order status conflict after pay success",
+                        List.of("payment-callback-idempotency"),
+                        signal("elk", "log", "duplicate_payment_callback", "ANOMALY", "same paymentNo entered grantBenefit twice", "duplicate notify payment callback idempotency order status conflict"),
+                        signal("skywalking", "trace", "payment_callback_trace", "ANOMALY", "callback retry executes delivery message twice", "payment callback retry duplicate side effect")),
+                evalCase("rag-kubernetes-crashloop-oom", "Kubernetes CrashLoop OOMKilled",
+                        "deployment unavailable because pod restarts repeatedly with CrashLoopBackOff and OOMKilled",
+                        List.of("kubernetes-pod-crashloop"),
+                        signal("prometheus", "metric", "kube_pod_container_status_restarts_total", "ANOMALY", "pod restart count increasing", "CrashLoopBackOff pod restart OOMKilled"),
+                        signal("elk", "log", "container_exit", "ANOMALY", "container exit code 137", "OOMKilled exit code 137 liveness probe failed")),
+                evalCase("rag-database-deadlock", "Database deadlock transaction",
+                        "checkout update failed with Deadlock found and transaction rollback during inventory update",
+                        List.of("database-deadlock-transaction"),
+                        signal("elk", "log", "Deadlock found", "ANOMALY", "InnoDB deadlock found when trying to get lock", "Deadlock found transaction rollback"),
+                        signal("skywalking", "trace", "db_update_span", "ANOMALY", "UPDATE inventory lock wait timeout", "Lock wait timeout exceeded gap lock")),
+                evalCase("rag-cache-hotkey-breakdown", "Cache hot key breakdown",
+                        "Redis timeout and DB QPS spike after hot key ttl expired, cache miss storm",
+                        List.of("cache-avalanche-hotkey"),
+                        signal("elk", "log", "RedisCommandTimeoutException", "ANOMALY", "Redis command timeout with hot key", "hot key cache breakdown RedisCommandTimeoutException"),
+                        signal("prometheus", "metric", "cache_miss_rate", "ANOMALY", "cache miss rate and DB QPS increased", "cache avalanche ttl expired miss storm")),
+                evalCase("rag-gray-release-risk", "Gray release risk approval",
+                        "agent generated patch for order payment flow and needs canary rollback approval gate",
+                        List.of("gray-release-risk"),
+                        signal("context", "release", "patch_scope", "OBSERVED", "patch touches payment order status and transaction code", "gray release canary rollback approval gate"),
+                        signal("prometheus", "metric", "post_release_5xx", "OBSERVED", "observe 5xx and p99 after canary", "release risk feature flag rollback"))
         );
     }
 

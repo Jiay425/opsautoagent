@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
 
 @Data
 @Builder
@@ -22,6 +23,8 @@ public class LogEvidenceEntity {
     private List<String> errorSamples;
 
     private String rawData;
+
+    private Map<String, Object> sourceMetadata;
 
 }
 

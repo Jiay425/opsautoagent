@@ -1,8 +1,8 @@
 package com.opsautoagent.infrastructure.adapter.gateway.ops;
 
 import lombok.extern.slf4j.Slf4j;
+import com.alibaba.fastjson.JSON;
 import org.springframework.ai.document.Document;
-import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -19,7 +19,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Stream;
@@ -31,14 +30,17 @@ import java.util.stream.Stream;
 public class OpsRunbookVectorIndexer implements ApplicationListener<ApplicationReadyEvent> {
 
     private final VectorStore vectorStore;
-    private final TokenTextSplitter tokenTextSplitter;
     private final JdbcTemplate pgVectorJdbcTemplate;
+    private final OpsRunbookMarkdownChunker markdownChunker;
 
     @Value("${ops.runbook.base-path:docs/dev-ops/runbook}")
     private String basePath;
 
-    @Value("${ops.runbook.vector.rebuild-on-startup:true}")
+    @Value("${ops.runbook.vector.rebuild-on-startup:false}")
     private boolean rebuildOnStartup;
+
+    @Value("${ops.runbook.vector.schema-check-on-startup:true}")
+    private boolean schemaCheckOnStartup;
 
     @Value("${ops.runbook.vector.fail-fast:false}")
     private boolean failFast;
@@ -46,18 +48,24 @@ public class OpsRunbookVectorIndexer implements ApplicationListener<ApplicationR
     @Value("${spring.ai.vectorstore.pgvector.table-name:vector_store_openai}")
     private String vectorTableName;
 
+    @Value("${ops.runbook.embedding.dimensions:${spring.ai.openai.embedding.options.dimensions:1536}}")
+    private Integer embeddingDimensions;
+
     @Value("${ops.runbook.vector.index-batch-size:8}")
     private Integer indexBatchSize;
 
     @Value("${ops.runbook.vector.index-batch-retries:3}")
     private Integer indexBatchRetries;
 
+    @Value("${ops.runbook.chunk.max-chars:1800}")
+    private int maxChunkChars;
+
     public OpsRunbookVectorIndexer(VectorStore vectorStore,
-                                   TokenTextSplitter tokenTextSplitter,
-                                   @Qualifier("pgVectorJdbcTemplate") JdbcTemplate pgVectorJdbcTemplate) {
+                                   @Qualifier("pgVectorJdbcTemplate") JdbcTemplate pgVectorJdbcTemplate,
+                                   OpsRunbookMarkdownChunker markdownChunker) {
         this.vectorStore = vectorStore;
-        this.tokenTextSplitter = tokenTextSplitter;
         this.pgVectorJdbcTemplate = pgVectorJdbcTemplate;
+        this.markdownChunker = markdownChunker;
     }
 
     @Override
@@ -69,26 +77,34 @@ public class OpsRunbookVectorIndexer implements ApplicationListener<ApplicationR
                 return;
             }
 
-            if (rebuildOnStartup) {
+            boolean tableRecreated = false;
+            if (schemaCheckOnStartup || rebuildOnStartup) {
+                tableRecreated = ensureVectorTableDimension();
+            }
+
+            if (rebuildOnStartup && !tableRecreated) {
                 deleteOldRunbookVectors();
             }
 
-            List<Document> documents = loadRunbookDocuments(runbookPath);
-            if (documents.isEmpty()) {
+            List<OpsRunbookMarkdownChunker.RunbookDocument> runbookDocuments = loadRunbookDocuments(runbookPath);
+            if (runbookDocuments.isEmpty()) {
                 log.warn("Ops runbook vector index skipped, no markdown runbook found: {}", runbookPath.toAbsolutePath());
                 return;
             }
 
             List<Document> chunks = new ArrayList<>();
-            for (Document document : documents) {
-                List<Document> splitChunks = tokenTextSplitter.split(document);
-                for (int i = 0; i < splitChunks.size(); i++) {
-                    chunks.add(enrichChunkMetadata(document, splitChunks.get(i), i, splitChunks.size()));
+            for (OpsRunbookMarkdownChunker.RunbookDocument document : runbookDocuments) {
+                for (OpsRunbookMarkdownChunker.RunbookChunk chunk : document.chunks()) {
+                    chunks.add(toVectorDocument(document, chunk));
                 }
             }
-            addChunks(chunks);
-            log.info("Ops runbook vector index completed. documents={}, chunks={}, path={}",
-                    documents.size(), chunks.size(), runbookPath.toAbsolutePath());
+            List<Document> chunksToAdd = (rebuildOnStartup || tableRecreated) ? chunks : filterNewChunks(chunks);
+            if (!chunksToAdd.isEmpty()) {
+                addChunks(chunksToAdd);
+            }
+            writeIngestManifest(runbookPath, runbookDocuments, chunks, chunksToAdd);
+            log.info("Ops runbook vector index completed. documents={}, chunks={}, indexedChunks={}, skippedChunks={}, path={}",
+                    runbookDocuments.size(), chunks.size(), chunksToAdd.size(), chunks.size() - chunksToAdd.size(), runbookPath.toAbsolutePath());
         } catch (Exception e) {
             log.warn("Ops runbook vector index failed", e);
             if (failFast) {
@@ -97,8 +113,8 @@ public class OpsRunbookVectorIndexer implements ApplicationListener<ApplicationR
         }
     }
 
-    private List<Document> loadRunbookDocuments(Path runbookPath) throws Exception {
-        List<Document> documents = new ArrayList<>();
+    private List<OpsRunbookMarkdownChunker.RunbookDocument> loadRunbookDocuments(Path runbookPath) throws Exception {
+        List<OpsRunbookMarkdownChunker.RunbookDocument> documents = new ArrayList<>();
         try (Stream<Path> files = Files.list(runbookPath)) {
             files.filter(path -> path.getFileName().toString().endsWith(".md"))
                     .forEach(path -> addDocument(path, documents));
@@ -106,17 +122,10 @@ public class OpsRunbookVectorIndexer implements ApplicationListener<ApplicationR
         return documents;
     }
 
-    private void addDocument(Path path, List<Document> documents) {
+    private void addDocument(Path path, List<OpsRunbookMarkdownChunker.RunbookDocument> documents) {
         try {
             String content = Files.readString(path, StandardCharsets.UTF_8);
-            String runbookId = stripExtension(path.getFileName().toString());
-            Map<String, Object> metadata = new LinkedHashMap<>();
-            metadata.put("source", "ops-runbook");
-            metadata.put("runbookId", runbookId);
-            metadata.put("title", extractTitle(content, path));
-            metadata.put("category", resolveCategory(path.getFileName().toString(), content));
-            metadata.put("path", path.toString());
-            documents.add(new Document("ops-runbook-" + runbookId, content, metadata));
+            documents.add(markdownChunker.parse(path, content, maxChunkChars));
         } catch (Exception e) {
             log.warn("Read ops runbook for vector index failed. path={}", path.toAbsolutePath(), e);
         }
@@ -131,18 +140,139 @@ public class OpsRunbookVectorIndexer implements ApplicationListener<ApplicationR
         }
     }
 
-    private Document enrichChunkMetadata(Document sourceDocument, Document chunk, int chunkIndex, int chunkCount) {
-        Map<String, Object> metadata = new LinkedHashMap<>(sourceDocument.getMetadata());
-        metadata.putAll(chunk.getMetadata());
-        metadata.put("chunkIndex", chunkIndex);
-        metadata.put("chunkCount", chunkCount);
-        String chunkId = sourceDocument.getId() + "-chunk-" + chunkIndex;
-        metadata.put("chunkId", chunkId);
+    private boolean ensureVectorTableDimension() {
+        int expectedDimensions = embeddingDimensions == null || embeddingDimensions <= 0 ? 1536 : embeddingDimensions;
+        try {
+            String tableName = sanitizeTableName(vectorTableName);
+            Integer actualDimensions = pgVectorJdbcTemplate.queryForObject("""
+                    SELECT CASE WHEN a.atttypmod > 0 THEN a.atttypmod ELSE NULL END
+                    FROM pg_attribute a
+                    JOIN pg_class c ON a.attrelid = c.oid
+                    JOIN pg_namespace n ON c.relnamespace = n.oid
+                    WHERE n.nspname = 'public'
+                      AND c.relname = ?
+                      AND a.attname = 'embedding'
+                      AND a.attnum > 0
+                      AND NOT a.attisdropped
+                    """, Integer.class, tableName);
+            if (actualDimensions != null && actualDimensions == expectedDimensions) {
+                return false;
+            }
+            log.warn("PgVector runbook table dimension mismatch. table={}, actual={}, expected={}. Recreating table.",
+                    vectorTableName, actualDimensions, expectedDimensions);
+            recreateVectorTable(tableName, expectedDimensions);
+            return true;
+        } catch (Exception e) {
+            log.warn("Check PgVector runbook table dimension failed, recreating table. table={}",
+                    vectorTableName, e);
+            recreateVectorTable(sanitizeTableName(vectorTableName), expectedDimensions);
+            return true;
+        }
+    }
+
+    private void recreateVectorTable(String tableName, int dimensions) {
+        pgVectorJdbcTemplate.execute("CREATE EXTENSION IF NOT EXISTS vector");
+        pgVectorJdbcTemplate.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+        pgVectorJdbcTemplate.execute("DROP TABLE IF EXISTS " + tableName);
+        pgVectorJdbcTemplate.execute("""
+                CREATE TABLE %s (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    content TEXT NOT NULL,
+                    metadata JSONB,
+                    embedding VECTOR(%d)
+                )
+                """.formatted(tableName, dimensions));
+        log.info("PgVector runbook table recreated. table={}, dimensions={}", tableName, dimensions);
+    }
+
+    private Document toVectorDocument(OpsRunbookMarkdownChunker.RunbookDocument document,
+                                      OpsRunbookMarkdownChunker.RunbookChunk chunk) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("source", "ops-runbook");
+        metadata.put("runbookId", document.runbookId());
+        metadata.put("title", document.title());
+        metadata.put("category", document.category());
+        metadata.put("path", document.path());
+        metadata.put("documentVersion", document.documentVersion());
+        metadata.put("documentHash", document.documentHash());
+        metadata.put("ingestPipeline", document.ingestPipeline());
+        metadata.put("chunkId", chunk.chunkId());
+        metadata.put("chunkIndex", chunk.chunkIndex());
+        metadata.put("chunkCount", chunk.chunkCount());
+        metadata.put("chunkSection", chunk.sectionTitle());
+        metadata.put("chunkHash", chunk.chunkHash());
         return Document.builder()
-                .id(UUID.nameUUIDFromBytes(chunkId.getBytes(StandardCharsets.UTF_8)).toString())
-                .text(chunk.getText())
+                .id(UUID.nameUUIDFromBytes(chunk.chunkId().getBytes(StandardCharsets.UTF_8)).toString())
+                .text(chunk.content())
                 .metadata(metadata)
                 .build();
+    }
+
+    private List<Document> filterNewChunks(List<Document> chunks) {
+        List<Document> result = new ArrayList<>();
+        for (Document chunk : chunks) {
+            if (!chunkAlreadyIndexed(chunk)) {
+                result.add(chunk);
+            }
+        }
+        return result;
+    }
+
+    private boolean chunkAlreadyIndexed(Document chunk) {
+        try {
+            Map<String, Object> metadata = chunk.getMetadata();
+            String chunkId = String.valueOf(metadata.getOrDefault("chunkId", ""));
+            String documentHash = String.valueOf(metadata.getOrDefault("documentHash", ""));
+            String chunkHash = String.valueOf(metadata.getOrDefault("chunkHash", ""));
+            Integer count = pgVectorJdbcTemplate.queryForObject("""
+                    SELECT COUNT(1)
+                    FROM %s
+                    WHERE metadata ->> 'source' = 'ops-runbook'
+                      AND metadata ->> 'chunkId' = ?
+                      AND metadata ->> 'documentHash' = ?
+                      AND metadata ->> 'chunkHash' = ?
+                    """.formatted(sanitizeTableName(vectorTableName)), Integer.class, chunkId, documentHash, chunkHash);
+            return count != null && count > 0;
+        } catch (Exception e) {
+            log.debug("Check runbook chunk version existence failed, will index chunk. id={}", chunk.getId(), e);
+            return false;
+        }
+    }
+
+    private void writeIngestManifest(Path runbookPath,
+                                     List<OpsRunbookMarkdownChunker.RunbookDocument> documents,
+                                     List<Document> chunks,
+                                     List<Document> chunksToAdd) {
+        try {
+            Path dir = Path.of("data", "runbook-rag-index");
+            Files.createDirectories(dir);
+            Map<String, Object> manifest = new LinkedHashMap<>();
+            manifest.put("basePath", runbookPath.toAbsolutePath().toString());
+            manifest.put("rebuildOnStartup", rebuildOnStartup);
+            manifest.put("documents", documents.size());
+            manifest.put("chunksTotal", chunks.size());
+            manifest.put("chunksIndexed", chunksToAdd.size());
+            manifest.put("chunksSkippedExistingVersion", chunks.size() - chunksToAdd.size());
+            manifest.put("vectorTableName", vectorTableName);
+            manifest.put("ingestPipeline", "markdown-section-chunker-v2");
+            manifest.put("maxChunkChars", maxChunkChars);
+            manifest.put("runbooks", documents.stream().map(this::documentManifest).toList());
+            Files.writeString(dir.resolve("manifest.json"), JSON.toJSONString(manifest, true), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            log.warn("Write ops runbook index manifest failed.", e);
+        }
+    }
+
+    private Map<String, Object> documentManifest(OpsRunbookMarkdownChunker.RunbookDocument document) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("runbookId", document.runbookId());
+        item.put("title", document.title());
+        item.put("path", document.path());
+        item.put("documentVersion", document.documentVersion());
+        item.put("documentHash", document.documentHash());
+        item.put("category", document.category());
+        item.put("chunkCount", document.chunks().size());
+        return item;
     }
 
     private void addChunks(List<Document> chunks) {
@@ -184,77 +314,6 @@ public class OpsRunbookVectorIndexer implements ApplicationListener<ApplicationR
             throw new IllegalArgumentException("Invalid pgvector table name: " + tableName);
         }
         return tableName;
-    }
-
-    private String extractTitle(String content, Path path) {
-        for (String line : content.split("\\R")) {
-            if (line.startsWith("# ")) {
-                return line.substring(2).trim();
-            }
-        }
-        return stripExtension(path.getFileName().toString());
-    }
-
-    private String resolveCategory(String fileName, String content) {
-        String lowerFileName = fileName.toLowerCase(Locale.ROOT);
-        if (lowerFileName.contains("connection-pool") || lowerFileName.contains("slow-sql")) {
-            return "database";
-        }
-        if (lowerFileName.contains("redis")) {
-            return "redis";
-        }
-        if (lowerFileName.contains("jvm")) {
-            return "jvm";
-        }
-        if (lowerFileName.contains("rpc")) {
-            return "downstream";
-        }
-        if (lowerFileName.contains("mq")) {
-            return "mq";
-        }
-        if (lowerFileName.contains("gateway")) {
-            return "gateway";
-        }
-        if (lowerFileName.contains("thread-pool")) {
-            return "thread_pool";
-        }
-        if (lowerFileName.contains("cpu")) {
-            return "system";
-        }
-        if (lowerFileName.contains("observability")) {
-            return "observability";
-        }
-        if (lowerFileName.contains("sufficiency")) {
-            return "policy";
-        }
-        if (lowerFileName.contains("500")) {
-            return "application";
-        }
-        String text = (fileName + "\n" + content).toLowerCase(Locale.ROOT);
-        if (text.contains("hikari") || text.contains("jdbc") || text.contains("database")) {
-            return "database";
-        }
-        if (text.contains("redis")) {
-            return "redis";
-        }
-        if (text.contains("full gc") || text.contains("outofmemory")) {
-            return "jvm";
-        }
-        if (text.contains("dubbo") || text.contains("rpc") || text.contains("downstream")) {
-            return "downstream";
-        }
-        if (text.contains("mq") || text.contains("kafka") || text.contains("rocketmq")) {
-            return "mq";
-        }
-        if (text.contains("500") || text.contains("exception")) {
-            return "application";
-        }
-        return "general";
-    }
-
-    private String stripExtension(String fileName) {
-        int index = fileName.lastIndexOf('.');
-        return index > 0 ? fileName.substring(0, index) : fileName;
     }
 
 }

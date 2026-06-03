@@ -15,7 +15,13 @@ public class EngineeringToolDefinitionEntity {
 
     private String description;
 
+    private String category;
+
     private String riskLevel;
+
+    private String accessLevel;
+
+    private String sourceType;
 
     private Integer timeoutMillis;
 

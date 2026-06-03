@@ -48,6 +48,7 @@ public class ModelRouter {
         // Rule 1: flash failed 2+ rounds → escalate to pro
         if (previousFlashFailures >= 2) {
             escalationCount++;
+            proCount++;
             return ModelDecision.pro(proModel, proMaxTokens,
                     "flash failed " + previousFlashFailures + " rounds, escalating to pro");
         }

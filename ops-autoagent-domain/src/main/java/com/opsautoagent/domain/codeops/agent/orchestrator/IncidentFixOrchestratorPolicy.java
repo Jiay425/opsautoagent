@@ -75,6 +75,13 @@ public class IncidentFixOrchestratorPolicy {
             return IncidentFixOrchestratorDecision.call(BugFixSkill.SKILL_ID,
                     "已有故障证据、代码候选和知识上下文，下一步由修复生成 Agent 产出最小 patch。");
         }
+        if (isNoCodeFix(memory.getPatchGeneration())) {
+            if (needsMapStage(memory.getReleaseRisk(), task, ReleaseRiskSkill.SKILL_ID)) {
+                return IncidentFixOrchestratorDecision.call(ReleaseRiskSkill.SKILL_ID,
+                        "修复生成 Agent 判断当前事故不需要代码补丁，跳过测试验证，直接输出运行时处置建议和上线观察项。");
+            }
+            return IncidentFixOrchestratorDecision.stop("当前事故已判定为非代码修复场景，已输出运行时处置建议和风险观察项。");
+        }
         if (needsMapStage(memory.getTestVerification(), task, TestVerificationSkill.SKILL_ID)) {
             return IncidentFixOrchestratorDecision.call(TestVerificationSkill.SKILL_ID,
                     "已有修复产物或已尝试修复生成，下一步由测试验证 Agent 决定并执行相关验证。");
@@ -173,6 +180,22 @@ public class IncidentFixOrchestratorPolicy {
             return bool;
         }
         return "true".equalsIgnoreCase(String.valueOf(value));
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean isNoCodeFix(Map<String, Object> patchGeneration) {
+        if (patchGeneration == null || patchGeneration.isEmpty()) {
+            return false;
+        }
+        if ("BUG_FIX_SKIPPED_NO_CODE_FIX".equals(String.valueOf(patchGeneration.get("phase")))) {
+            return true;
+        }
+        Object repairScope = patchGeneration.get("repairScope");
+        if (repairScope instanceof Map<?, ?> scope) {
+            Object scopeType = scope.get("scopeType");
+            return "NO_CODE_FIX".equals(String.valueOf(scopeType));
+        }
+        return false;
     }
 
     private boolean containsFocusArea(EngineeringTaskEntity task, String focusArea) {

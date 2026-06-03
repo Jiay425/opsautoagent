@@ -35,6 +35,14 @@ public class OpsRunbookRagEvaluationSummary {
 
     private BigDecimal averageLatencyMs;
 
+    private BigDecimal rootCauseHitRate;
+
+    private String reportJsonPath;
+
+    private String reportMarkdownPath;
+
+    private String failureCasesPath;
+
     private List<OpsRunbookRagEvalRun> runs;
 
     private Map<String, OpsRunbookRagEvaluationSummary> ablationSummaries;

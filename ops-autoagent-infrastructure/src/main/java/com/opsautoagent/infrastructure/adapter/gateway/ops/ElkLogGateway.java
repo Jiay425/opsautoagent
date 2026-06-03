@@ -63,6 +63,13 @@ public class ElkLogGateway extends AbstractOpsHttpGateway implements IOpsLogGate
                             "Configure ops.integrations.elk.base-url and ops.integrations.elk.index-pattern.",
                             "Log search will use serviceName, incident window, ERROR/Exception, and problem keywords."))
                     .rawData("")
+                    .sourceMetadata(Map.of(
+                            "sourceType", "ELASTICSEARCH",
+                            "sourceMode", "UNCONFIGURED",
+                            "baseUrl", value(baseUrl),
+                            "indexPattern", value(indexPattern),
+                            "mcpEnabled", canUseMcp(),
+                            "fixtureFallback", false))
                     .build();
         }
 
@@ -85,6 +92,15 @@ public class ElkLogGateway extends AbstractOpsHttpGateway implements IOpsLogGate
                             ? List.of("ELK real query succeeded but returned zero matching incident log samples.")
                             : samples)
                     .rawData(abbreviate(response, 6000))
+                    .sourceMetadata(Map.of(
+                            "sourceType", "ELASTICSEARCH",
+                            "sourceMode", canUseMcp() ? "REAL_MCP_OR_HTTP" : "REAL_HTTP",
+                            "baseUrl", value(baseUrl),
+                            "indexPattern", value(indexPattern),
+                            "query", JSON.parseObject(body),
+                            "timeWindow", command.getStartTime() + " ~ " + command.getEndTime(),
+                            "totalHits", totalHits,
+                            "fixtureFallback", false))
                     .build();
         } catch (Exception e) {
             log.warn("ELK log query failed. service={}", command.getServiceName(), e);
@@ -94,6 +110,13 @@ public class ElkLogGateway extends AbstractOpsHttpGateway implements IOpsLogGate
                     .summary("ELK query failed: " + e.getMessage())
                     .errorSamples(List.of("Check Elasticsearch base-url, index pattern, auth, and @timestamp field."))
                     .rawData("")
+                    .sourceMetadata(Map.of(
+                            "sourceType", "ELASTICSEARCH",
+                            "sourceMode", "REAL_QUERY_FAILED",
+                            "baseUrl", value(baseUrl),
+                            "indexPattern", value(indexPattern),
+                            "error", value(e.getMessage()),
+                            "fixtureFallback", false))
                     .build();
         }
     }

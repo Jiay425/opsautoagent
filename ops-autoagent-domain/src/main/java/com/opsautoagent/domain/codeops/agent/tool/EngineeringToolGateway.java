@@ -4,6 +4,7 @@ import com.opsautoagent.domain.codeops.model.entity.EngineeringToolDefinitionEnt
 import com.opsautoagent.domain.codeops.model.entity.CodeSnippetEntity;
 import com.opsautoagent.domain.codeops.model.entity.RepoDiffContextEntity;
 import com.opsautoagent.domain.codeops.model.entity.RepoDiffHunkEntity;
+import com.opsautoagent.domain.codeops.agent.security.AgentPermissionPolicy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -34,17 +35,30 @@ public class EngineeringToolGateway {
     private static final Pattern HUNK_HEADER_PATTERN = Pattern.compile("@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,(\\d+))? @@.*");
 
     private final List<EngineeringToolDefinitionEntity> tools = List.of(
-            tool("repo.search_text", "Search code text in the target repository", "READ_ONLY"),
-            tool("repo.list_files", "List repository files by pattern", "READ_ONLY"),
-            tool("repo.git_diff", "Read current diff or a specified change ref", "READ_ONLY"),
-            tool("repo.git_log", "Read recent git history", "READ_ONLY"),
-            tool("repo.find_tests", "Find tests related to changed code", "READ_ONLY"),
-            tool("knowledge.search", "Search engineering knowledge documents", "READ_ONLY"),
-            tool("ops.query_prometheus", "Query metrics for online diagnosis", "READ_ONLY"),
-            tool("ops.search_logs", "Search logs for online diagnosis", "READ_ONLY"),
-            tool("ops.query_trace", "Query trace evidence for online diagnosis", "READ_ONLY"),
-            tool("artifact.generate_review_report", "Generate review report draft", "LOW_RISK_WRITE")
+            tool("repo.create_snapshot", "Create repository source snapshot", "repository", "READ_ONLY", "READ_ONLY", "LOCAL_REPOSITORY"),
+            tool("repo.search_text", "Search code text in the target repository", "repository", "READ_ONLY", "READ_ONLY", "LOCAL_REPOSITORY"),
+            tool("repo.list_files", "List repository files by pattern", "repository", "READ_ONLY", "READ_ONLY", "LOCAL_REPOSITORY"),
+            tool("repo.read_file_snippet", "Read a bounded source file snippet", "repository", "READ_ONLY", "READ_ONLY", "LOCAL_REPOSITORY"),
+            tool("repo.git_diff", "Read current diff or a specified change ref", "repository", "READ_ONLY", "READ_ONLY", "LOCAL_REPOSITORY"),
+            tool("repo.git_log", "Read recent git history", "repository", "READ_ONLY", "READ_ONLY", "LOCAL_REPOSITORY"),
+            tool("repo.find_tests", "Find tests related to changed code", "repository", "READ_ONLY", "READ_ONLY", "LOCAL_REPOSITORY"),
+            tool("repo.maven", "Run Maven verification command under permission policy", "command", "MEDIUM", "COMMAND_EXECUTE", "LOCAL_COMMAND"),
+            tool("knowledge.search", "Search engineering knowledge documents", "knowledge", "READ_ONLY", "READ_ONLY", "LOCAL_REPOSITORY"),
+            tool("ops.query_prometheus", "Query metrics for online diagnosis", "observability", "READ_ONLY", "EXTERNAL_CALL", "REAL_GATEWAY"),
+            tool("ops.search_logs", "Search logs for online diagnosis", "observability", "READ_ONLY", "EXTERNAL_CALL", "REAL_GATEWAY"),
+            tool("ops.query_trace", "Query trace evidence for online diagnosis", "observability", "READ_ONLY", "EXTERNAL_CALL", "REAL_GATEWAY"),
+            tool("artifact.generate_review_report", "Generate review report draft", "artifact", "LOW_RISK_WRITE", "LOW_RISK_WRITE", "SANDBOX")
     );
+
+    private final AgentPermissionPolicy permissionPolicy;
+
+    private final ToolRuntimeService toolRuntimeService;
+
+    public EngineeringToolGateway(AgentPermissionPolicy permissionPolicy,
+                                  ToolRuntimeService toolRuntimeService) {
+        this.permissionPolicy = permissionPolicy;
+        this.toolRuntimeService = toolRuntimeService;
+    }
 
     public List<EngineeringToolDefinitionEntity> listTools() {
         return tools;
@@ -55,9 +69,22 @@ public class EngineeringToolGateway {
                 .anyMatch(tool -> Boolean.TRUE.equals(tool.getEnabled()) && tool.getToolName().equals(toolName));
     }
 
+    public List<ToolExecutionRecord> listRecentToolCalls(int limit) {
+        return toolRuntimeService.listRecentRecords(limit);
+    }
+
     public Map<String, String> createRepositorySnapshot(String repository) {
         Path repositoryPath = resolveRepositoryPath(repository);
+        ToolExecutionRecord record = toolRuntimeService.begin(
+                "repo.create_snapshot",
+                "Create repository source snapshot",
+                "repository",
+                ToolAccessLevel.READ_ONLY,
+                ToolSourceType.LOCAL_REPOSITORY,
+                "repository=" + repositoryPath,
+                Map.of("repository", repositoryPath.toString()));
         if (!Files.exists(repositoryPath)) {
+            toolRuntimeService.success(record, "snapshotFiles=0, repositoryMissing=true");
             return Map.of();
         }
         Map<String, String> snapshot = new LinkedHashMap<>();
@@ -67,16 +94,29 @@ public class EngineeringToolGateway {
                     .forEach(path -> readSnapshotFile(repositoryPath, path, snapshot));
         } catch (IOException e) {
             log.warn("Create repository snapshot failed. repository={}", repositoryPath, e);
+            toolRuntimeService.failure(record, e);
+            return snapshot;
         }
+        toolRuntimeService.success(record, "snapshotFiles=" + snapshot.size());
         return snapshot;
     }
 
     public List<String> searchCode(String repository, List<String> queries, int maxMatches) {
+        Path repositoryPath = resolveRepositoryPath(repository);
+        ToolExecutionRecord record = toolRuntimeService.begin(
+                "repo.search_text",
+                "Search code text in repository",
+                "repository",
+                ToolAccessLevel.READ_ONLY,
+                ToolSourceType.LOCAL_REPOSITORY,
+                "repository=" + repositoryPath + ", queryCount=" + (queries == null ? 0 : queries.size()) + ", maxMatches=" + maxMatches,
+                Map.of("repository", repositoryPath.toString(), "queryCount", queries == null ? 0 : queries.size(), "maxMatches", maxMatches));
         if (queries == null || queries.isEmpty()) {
+            toolRuntimeService.success(record, "matches=0, emptyQueries=true");
             return List.of();
         }
-        Path repositoryPath = resolveRepositoryPath(repository);
         if (!Files.exists(repositoryPath)) {
+            toolRuntimeService.success(record, "matches=0, repositoryMissing=true");
             return List.of();
         }
         Map<String, String> normalizedQueries = new LinkedHashMap<>();
@@ -86,6 +126,7 @@ public class EngineeringToolGateway {
             }
         }
         if (normalizedQueries.isEmpty()) {
+            toolRuntimeService.success(record, "matches=0, normalizedQueries=0");
             return List.of();
         }
         List<String> matches = new ArrayList<>();
@@ -95,15 +136,33 @@ public class EngineeringToolGateway {
                     .forEach(path -> addCodeMatches(repositoryPath, path, normalizedQueries, matches, maxMatches));
         } catch (IOException e) {
             log.warn("Search code failed. repository={}", repositoryPath, e);
+            toolRuntimeService.failure(record, e);
         }
-        return matches.size() <= maxMatches ? matches : matches.subList(0, maxMatches);
+        List<String> result = matches.size() <= maxMatches ? matches : matches.subList(0, maxMatches);
+        toolRuntimeService.success(record, "matches=" + result.size());
+        return result;
     }
 
     public CommandResult runMavenCommand(String repository, List<String> args, long timeoutMillis) {
         Path repositoryPath = resolveRepositoryPath(repository);
         List<String> command = new ArrayList<>();
         command.add(isWindows() ? "mvn.cmd" : "mvn");
-        command.addAll(args);
+        command.addAll(args == null ? List.of() : args);
+        String policyCommand = "mvn " + String.join(" ", args == null ? List.of() : args);
+        ToolExecutionRecord record = toolRuntimeService.begin(
+                "repo.maven",
+                "Run Maven command",
+                "command",
+                ToolAccessLevel.COMMAND_EXECUTE,
+                ToolSourceType.LOCAL_COMMAND,
+                "repository=" + repositoryPath + ", command=" + policyCommand + ", timeoutMillis=" + timeoutMillis,
+                Map.of("repository", repositoryPath.toString(), "command", policyCommand, "timeoutMillis", timeoutMillis));
+        if (!permissionPolicy.isCommandAllowed(policyCommand)) {
+            CommandResult denied = new CommandResult(command, false, -1,
+                    "PERMISSION_DENIED: command is not allowed by AgentPermissionPolicy: " + policyCommand, 0L);
+            toolRuntimeService.denied(record, commandSummary(denied));
+            return denied;
+        }
         ProcessBuilder builder = new ProcessBuilder(command);
         builder.directory(repositoryPath.toFile());
         builder.redirectErrorStream(true);
@@ -115,19 +174,29 @@ public class EngineeringToolGateway {
             if (!completed) {
                 destroyProcessTree(process);
                 String output = outputFuture.get(2, TimeUnit.SECONDS);
-                return new CommandResult(command, false, -1,
+                CommandResult timeout = new CommandResult(command, false, -1,
                         abbreviate("command timeout after " + timeoutMillis + "ms\n" + output, 6000),
                         System.currentTimeMillis() - start);
+                toolRuntimeService.timeout(record, commandSummary(timeout));
+                return timeout;
             }
             String output = outputFuture.get(2, TimeUnit.SECONDS);
-            return new CommandResult(command, process.exitValue() == 0, process.exitValue(), abbreviate(output, 6000), System.currentTimeMillis() - start);
+            CommandResult result = new CommandResult(command, process.exitValue() == 0, process.exitValue(), abbreviate(output, 6000), System.currentTimeMillis() - start);
+            toolRuntimeService.success(record, commandSummary(result));
+            return result;
         } catch (IOException e) {
-            return new CommandResult(command, false, -1, e.getMessage(), System.currentTimeMillis() - start);
+            CommandResult result = new CommandResult(command, false, -1, e.getMessage(), System.currentTimeMillis() - start);
+            toolRuntimeService.failure(record, e);
+            return result;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return new CommandResult(command, false, -1, "interrupted", System.currentTimeMillis() - start);
+            CommandResult result = new CommandResult(command, false, -1, "interrupted", System.currentTimeMillis() - start);
+            toolRuntimeService.failure(record, e);
+            return result;
         } catch (Exception e) {
-            return new CommandResult(command, false, -1, e.getMessage(), System.currentTimeMillis() - start);
+            CommandResult result = new CommandResult(command, false, -1, e.getMessage(), System.currentTimeMillis() - start);
+            toolRuntimeService.failure(record, e);
+            return result;
         }
     }
 
@@ -152,22 +221,35 @@ public class EngineeringToolGateway {
 
     public CodeSnippetEntity readFileSnippet(String repository, String filePath, int centerLine, int radius) {
         Path repositoryPath = resolveRepositoryPath(repository);
+        ToolExecutionRecord record = toolRuntimeService.begin(
+                "repo.read_file_snippet",
+                "Read source file snippet",
+                "repository",
+                ToolAccessLevel.READ_ONLY,
+                ToolSourceType.LOCAL_REPOSITORY,
+                "repository=" + repositoryPath + ", filePath=" + filePath + ", centerLine=" + centerLine + ", radius=" + radius,
+                Map.of("repository", repositoryPath.toString(), "filePath", filePath == null ? "" : filePath,
+                        "centerLine", centerLine, "radius", radius));
         if (isBlank(filePath)) {
-            return CodeSnippetEntity.builder()
+            CodeSnippetEntity result = CodeSnippetEntity.builder()
                     .filePath(filePath)
                     .available(false)
                     .errorMessage("filePath is blank")
                     .lines(List.of())
                     .build();
+            toolRuntimeService.success(record, snippetSummary(result));
+            return result;
         }
         Path file = repositoryPath.resolve(filePath).normalize();
         if (!file.startsWith(repositoryPath.normalize()) || !Files.exists(file) || !Files.isRegularFile(file)) {
-            return CodeSnippetEntity.builder()
+            CodeSnippetEntity result = CodeSnippetEntity.builder()
                     .filePath(filePath)
                     .available(false)
                     .errorMessage("file does not exist or is outside repository")
                     .lines(List.of())
                     .build();
+            toolRuntimeService.success(record, snippetSummary(result));
+            return result;
         }
         try {
             List<String> allLines = Files.readAllLines(file, StandardCharsets.UTF_8);
@@ -178,20 +260,24 @@ public class EngineeringToolGateway {
             for (int i = start; i <= end; i++) {
                 lines.add(i + ":" + allLines.get(i - 1));
             }
-            return CodeSnippetEntity.builder()
+            CodeSnippetEntity result = CodeSnippetEntity.builder()
                     .filePath(filePath)
                     .startLine(start)
                     .endLine(end)
                     .lines(lines)
                     .available(true)
                     .build();
+            toolRuntimeService.success(record, snippetSummary(result));
+            return result;
         } catch (IOException e) {
-            return CodeSnippetEntity.builder()
+            CodeSnippetEntity result = CodeSnippetEntity.builder()
                     .filePath(filePath)
                     .available(false)
                     .errorMessage(e.getMessage())
                     .lines(List.of())
                     .build();
+            toolRuntimeService.failure(record, e);
+            return result;
         }
     }
 
@@ -235,6 +321,14 @@ public class EngineeringToolGateway {
     public RepoDiffContextEntity loadDiffContext(String repository, String changeRef, Map<String, Object> context) {
         Path repositoryPath = resolveRepositoryPath(repository);
         String normalizedChangeRef = isBlank(changeRef) ? "working_tree" : changeRef.trim();
+        ToolExecutionRecord record = toolRuntimeService.begin(
+                "repo.git_diff",
+                "Load repository diff context",
+                "repository",
+                ToolAccessLevel.READ_ONLY,
+                ToolSourceType.LOCAL_REPOSITORY,
+                "repository=" + repositoryPath + ", changeRef=" + normalizedChangeRef,
+                Map.of("repository", repositoryPath.toString(), "changeRef", normalizedChangeRef));
         try {
             Map<String, String> baselineSnapshot = Map.of();
             if (context != null && context.get("repoBaselineSnapshot") instanceof Map<?, ?> snapshotMap) {
@@ -250,7 +344,7 @@ public class EngineeringToolGateway {
                     : readSnapshotChangedFiles(baselineSnapshot, createRepositorySnapshot(repositoryPath.toString()));
             List<String> relatedTests = findRelatedTests(repositoryPath, changedFiles);
             List<RepoDiffHunkEntity> hunks = parseHunks(diffText);
-            return RepoDiffContextEntity.builder()
+            RepoDiffContextEntity result = RepoDiffContextEntity.builder()
                     .repositoryPath(repositoryPath.toString())
                     .changeRef(normalizedChangeRef)
                     .changedFiles(changedFiles)
@@ -260,9 +354,11 @@ public class EngineeringToolGateway {
                     .diffText(abbreviate(diffText, MAX_DIFF_LENGTH))
                     .diffAvailable(!isBlank(diffText))
                     .build();
+            toolRuntimeService.success(record, diffSummary(result));
+            return result;
         } catch (Exception e) {
             log.warn("Load repo diff context failed. repository={}, changeRef={}", repositoryPath, normalizedChangeRef, e);
-            return RepoDiffContextEntity.builder()
+            RepoDiffContextEntity result = RepoDiffContextEntity.builder()
                     .repositoryPath(repositoryPath.toString())
                     .changeRef(normalizedChangeRef)
                     .changedFiles(List.of())
@@ -273,6 +369,8 @@ public class EngineeringToolGateway {
                     .diffAvailable(false)
                     .errorMessage(e.getMessage())
                     .build();
+            toolRuntimeService.failure(record, e);
+            return result;
         }
     }
 
@@ -571,11 +669,52 @@ public class EngineeringToolGateway {
                 + ", removedLines=" + removedLines;
     }
 
-    private EngineeringToolDefinitionEntity tool(String name, String description, String riskLevel) {
+    private String commandSummary(CommandResult result) {
+        if (result == null) {
+            return "";
+        }
+        return "success=" + result.success()
+                + ", exitCode=" + result.exitCode()
+                + ", costMillis=" + result.costMillis()
+                + ", outputLength=" + value(result.output()).length();
+    }
+
+    private String snippetSummary(CodeSnippetEntity snippet) {
+        if (snippet == null) {
+            return "";
+        }
+        return "filePath=" + value(snippet.getFilePath())
+                + ", available=" + Boolean.TRUE.equals(snippet.getAvailable())
+                + ", startLine=" + snippet.getStartLine()
+                + ", endLine=" + snippet.getEndLine()
+                + ", lines=" + (snippet.getLines() == null ? 0 : snippet.getLines().size())
+                + ", error=" + value(snippet.getErrorMessage());
+    }
+
+    private String diffSummary(RepoDiffContextEntity diffContext) {
+        if (diffContext == null) {
+            return "";
+        }
+        return "diffAvailable=" + Boolean.TRUE.equals(diffContext.getDiffAvailable())
+                + ", changedFiles=" + (diffContext.getChangedFiles() == null ? 0 : diffContext.getChangedFiles().size())
+                + ", relatedTests=" + (diffContext.getRelatedTestFiles() == null ? 0 : diffContext.getRelatedTestFiles().size())
+                + ", hunks=" + (diffContext.getHunks() == null ? 0 : diffContext.getHunks().size())
+                + ", error=" + value(diffContext.getErrorMessage());
+    }
+
+    private EngineeringToolDefinitionEntity tool(String name,
+                                                String description,
+                                                String category,
+                                                String riskLevel,
+                                                String accessLevel,
+                                                String sourceType) {
         return EngineeringToolDefinitionEntity.builder()
                 .toolName(name)
                 .description(description)
+                .category(category)
                 .riskLevel(riskLevel)
+                .accessLevel(accessLevel)
+                .sourceType(sourceType)
                 .timeoutMillis(10_000)
                 .enabled(true)
                 .build();

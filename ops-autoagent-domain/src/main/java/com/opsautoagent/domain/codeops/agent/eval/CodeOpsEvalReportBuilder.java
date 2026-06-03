@@ -48,6 +48,9 @@ public class CodeOpsEvalReportBuilder {
         boolean releaseRiskGenerated = task.getSteps() != null && task.getSteps().stream()
                 .anyMatch(s -> "release_risk_analysis".equals(s.getSelectedSkill())
                         && "SUCCESS".equals(s.getStatus()));
+        Map<String, Object> evidenceCoverage = mapValue(rawOutputs.get("evidenceCoverage"));
+        Map<String, Object> patchQuality = mapValue(rawOutputs.get("patchQuality"));
+        Map<String, Object> patchSandbox = mapValue(rawOutputs.get("patchSandbox"));
 
         int reflectionRounds = extractReflectionRounds(task);
         boolean reflectionRecovered = reflectionRounds > 0 && "SUCCESS".equals(run.getStatus());
@@ -76,6 +79,13 @@ public class CodeOpsEvalReportBuilder {
                 .reflectionRecovered(reflectionRecovered)
                 .releaseRiskGenerated(releaseRiskGenerated)
                 .finalRiskLevel(extractRiskLevel(rawOutputs))
+                .realEvidenceCoverage(doubleValue(evidenceCoverage.get("realEvidenceCoverage")))
+                .fixtureEvidenceUsed(Boolean.TRUE.equals(evidenceCoverage.get("fixtureFallbackUsed")))
+                .evidenceSourceSummary(Map.of(
+                        "coverage", evidenceCoverage,
+                        "provenance", rawOutputs.getOrDefault("evidenceProvenance", List.of())))
+                .patchQuality(patchQuality)
+                .patchSandbox(patchSandbox)
                 .failureType(extractFailureType(rawOutputs))
                 .failureSummary(extractFailureSummary(task))
                 .steps(stepReports)
@@ -98,6 +108,21 @@ public class CodeOpsEvalReportBuilder {
         long noCodeFixCases = cases.stream().filter(c -> "NO_CODE_FIX".equals(c.getScopeType())).count();
         long noCodeFixCorrect = cases.stream()
                 .filter(c -> "NO_CODE_FIX".equals(c.getScopeType()) && !c.isPatchGenerated()).count();
+        long evidenceCases = cases.stream().filter(c -> c.getEvidenceSourceSummary() != null && !c.getEvidenceSourceSummary().isEmpty()).count();
+        BigDecimal realEvidenceCoverage = evidenceCases > 0
+                ? cases.stream()
+                .map(c -> BigDecimal.valueOf(c.getRealEvidenceCoverage()))
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .divide(BigDecimal.valueOf(evidenceCases), 2, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO;
+        long patchQualityCases = cases.stream().filter(c -> c.getPatchQuality() != null && !c.getPatchQuality().isEmpty()).count();
+        long staticSafetyPassed = cases.stream()
+                .filter(c -> Boolean.TRUE.equals(c.getPatchQuality() == null ? null : c.getPatchQuality().get("staticSafetyPassed")))
+                .count();
+        long sandboxCases = cases.stream().filter(c -> c.getPatchSandbox() != null && !c.getPatchSandbox().isEmpty()).count();
+        long sandboxIsolated = cases.stream()
+                .filter(c -> Boolean.TRUE.equals(c.getPatchSandbox() == null ? null : c.getPatchSandbox().get("isolated")))
+                .count();
 
         return CodeOpsEvalMetricSummary.builder()
                 .scopeAccuracy(total > 0 ? BigDecimal.valueOf(scopeMatch).divide(BigDecimal.valueOf(total), 2, RoundingMode.HALF_UP) : BigDecimal.ONE)
@@ -106,6 +131,9 @@ public class CodeOpsEvalReportBuilder {
                 .testPassRate(codeFixCases > 0 ? BigDecimal.valueOf(testsPassed).divide(BigDecimal.valueOf(codeFixCases), 2, RoundingMode.HALF_UP) : BigDecimal.ONE)
                 .reflectionRecoveryRate(reflectionCases > 0 ? BigDecimal.valueOf(reflectionRecovered).divide(BigDecimal.valueOf(reflectionCases), 2, RoundingMode.HALF_UP) : BigDecimal.ONE)
                 .noCodeFixAccuracy(noCodeFixCases > 0 ? BigDecimal.valueOf(noCodeFixCorrect).divide(BigDecimal.valueOf(noCodeFixCases), 2, RoundingMode.HALF_UP) : BigDecimal.ONE)
+                .realEvidenceCoverageRate(realEvidenceCoverage)
+                .patchStaticSafetyRate(patchQualityCases > 0 ? BigDecimal.valueOf(staticSafetyPassed).divide(BigDecimal.valueOf(patchQualityCases), 2, RoundingMode.HALF_UP) : BigDecimal.ONE)
+                .patchSandboxIsolationRate(sandboxCases > 0 ? BigDecimal.valueOf(sandboxIsolated).divide(BigDecimal.valueOf(sandboxCases), 2, RoundingMode.HALF_UP) : BigDecimal.ONE)
                 .build();
     }
 
@@ -323,6 +351,29 @@ public class CodeOpsEvalReportBuilder {
             return list.stream().map(String::valueOf).toList();
         }
         return List.of();
+    }
+
+    private Map<String, Object> mapValue(Object obj) {
+        if (obj instanceof Map<?, ?> map) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            map.forEach((key, value) -> result.put(String.valueOf(key), value));
+            return result;
+        }
+        return Map.of();
+    }
+
+    private double doubleValue(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        if (value == null) {
+            return 0D;
+        }
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            return 0D;
+        }
     }
 
     private ReportArtifacts buildArtifacts(String batchId, String caseId) {

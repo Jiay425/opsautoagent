@@ -6,6 +6,7 @@ import com.opsautoagent.domain.ops.agent.eval.OpsEvaluationSummary;
 import com.opsautoagent.domain.ops.agent.eval.OpsMemoryToolchainEvaluationSummary;
 import com.opsautoagent.domain.ops.agent.eval.OpsRunbookRagEvaluationService;
 import com.opsautoagent.domain.ops.agent.eval.OpsRunbookRagEvaluationSummary;
+import com.opsautoagent.domain.ops.adapter.gateway.IOpsRunbookKnowledgeGovernanceService;
 import com.opsautoagent.types.enums.ResponseCode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.CrossOrigin;
@@ -15,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 
 import jakarta.annotation.Resource;
+import java.util.Map;
 
 @Slf4j
 @RestController
@@ -27,6 +29,9 @@ public class OpsEvaluationController {
 
     @Resource
     private OpsRunbookRagEvaluationService opsRunbookRagEvaluationService;
+
+    @Resource
+    private IOpsRunbookKnowledgeGovernanceService opsRunbookKnowledgeGovernanceService;
 
     @RequestMapping(value = "run", method = RequestMethod.POST)
     public Response<OpsEvaluationSummary> runEvaluation() {
@@ -94,6 +99,23 @@ public class OpsEvaluationController {
         } catch (Exception e) {
             log.warn("Ops runbook RAG ablation evaluation run failed.", e);
             return Response.<OpsRunbookRagEvaluationSummary>builder()
+                    .code(ResponseCode.UN_ERROR.getCode())
+                    .info(e.getMessage())
+                    .build();
+        }
+    }
+
+    @RequestMapping(value = "runbook-rag/governance", method = RequestMethod.GET)
+    public Response<Map<String, Object>> runbookRagGovernance() {
+        try {
+            return Response.<Map<String, Object>>builder()
+                    .code(ResponseCode.SUCCESS.getCode())
+                    .info(ResponseCode.SUCCESS.getInfo())
+                    .data(opsRunbookKnowledgeGovernanceService.summarizeCorpus())
+                    .build();
+        } catch (Exception e) {
+            log.warn("Ops runbook RAG governance summary failed.", e);
+            return Response.<Map<String, Object>>builder()
                     .code(ResponseCode.UN_ERROR.getCode())
                     .info(e.getMessage())
                     .build();

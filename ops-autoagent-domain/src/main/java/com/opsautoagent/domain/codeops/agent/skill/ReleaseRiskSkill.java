@@ -101,6 +101,7 @@ public class ReleaseRiskSkill implements EngineeringSkill {
         rawOutput.put("llmReleaseRiskFallback", agentOutput.isFallback());
         rawOutput.put("releaseRiskReasoning", agentOutput.getReasoning() == null ? List.of() : agentOutput.getReasoning());
         rawOutput.put("humanApprovalPoints", agentOutput.getHumanApprovalPoints() == null ? List.of() : agentOutput.getHumanApprovalPoints());
+        rawOutput.put("modelRouting", agentOutput.getModelRouting() == null ? Map.of() : agentOutput.getModelRouting());
         rawOutput.put("llmReleaseRiskError", value(agentOutput.getErrorMessage()));
         return EngineeringSkillResultEntity.builder()
                 .skillId(SKILL_ID)

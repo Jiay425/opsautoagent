@@ -28,6 +28,9 @@ public class CodeOpsReportMarkdownGenerator {
             md.append("| Test Pass Rate | ").append(pct(m.getTestPassRate())).append(" |\n");
             md.append("| Reflection Recovery Rate | ").append(pct(m.getReflectionRecoveryRate())).append(" |\n");
             md.append("| No-Code-Fix Accuracy | ").append(pct(m.getNoCodeFixAccuracy())).append(" |\n");
+            md.append("| Real Evidence Coverage | ").append(pct(m.getRealEvidenceCoverageRate())).append(" |\n");
+            md.append("| Patch Static Safety Rate | ").append(pct(m.getPatchStaticSafetyRate())).append(" |\n");
+            md.append("| Patch Sandbox Isolation Rate | ").append(pct(m.getPatchSandboxIsolationRate())).append(" |\n");
         }
 
         md.append("\n## Case Results\n\n");
@@ -113,6 +116,18 @@ public class CodeOpsReportMarkdownGenerator {
         md.append("- **patchApplied:** ").append(c.isPatchApplied()).append("\n");
         md.append("- **compilePassed:** ").append(c.isCompilePassed()).append("\n");
         md.append("- **testsPassed:** ").append(c.isTestsPassed()).append("\n");
+        md.append("- **realEvidenceCoverage:** ").append((int) (c.getRealEvidenceCoverage() * 100)).append("%\n");
+        md.append("- **fixtureEvidenceUsed:** ").append(c.isFixtureEvidenceUsed()).append("\n");
+        if (c.getPatchSandbox() != null && !c.getPatchSandbox().isEmpty()) {
+            md.append("- **patchSandbox:** ").append(c.getPatchSandbox().getOrDefault("mode", ""))
+                    .append(", isolated=").append(c.getPatchSandbox().getOrDefault("isolated", false)).append("\n");
+        }
+        if (c.getPatchQuality() != null && !c.getPatchQuality().isEmpty()) {
+            md.append("- **patchQuality:** minimalChangeScore=")
+                    .append(c.getPatchQuality().getOrDefault("minimalChangeScore", ""))
+                    .append(", staticSafetyPassed=")
+                    .append(c.getPatchQuality().getOrDefault("staticSafetyPassed", "")).append("\n");
+        }
 
         if (c.getFailureType() != null && !c.getFailureType().isEmpty()) {
             md.append("- **failureType:** ").append(c.getFailureType()).append("\n");

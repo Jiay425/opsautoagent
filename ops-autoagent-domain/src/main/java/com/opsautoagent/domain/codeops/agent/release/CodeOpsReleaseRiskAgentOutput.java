@@ -8,6 +8,7 @@ import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 @Data
 @Builder
@@ -24,6 +25,8 @@ public class CodeOpsReleaseRiskAgentOutput {
     private List<String> reasoning;
 
     private List<String> humanApprovalPoints;
+
+    private Map<String, Object> modelRouting;
 
     private String rawContent;
 

@@ -3,6 +3,7 @@ package com.opsautoagent.domain.codeops.service;
 import com.opsautoagent.domain.codeops.agent.tool.EngineeringToolGateway;
 import com.opsautoagent.domain.codeops.agent.skill.EngineeringSkill;
 import com.opsautoagent.domain.codeops.agent.skill.EngineeringSkillRegistry;
+import com.opsautoagent.domain.codeops.agent.skill.TestVerificationSkill;
 import com.opsautoagent.domain.codeops.agent.orchestrator.IncidentFixOrchestratorDecision;
 import com.opsautoagent.domain.codeops.agent.orchestrator.IncidentFixOrchestratorPolicy;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringSkillEntity;
@@ -14,6 +15,10 @@ import com.opsautoagent.domain.codeops.agent.compaction.ContextCompactionService
 import com.opsautoagent.domain.codeops.agent.memory.IncidentMemoryService;
 import com.opsautoagent.domain.codeops.agent.recovery.ErrorRecoveryPolicy;
 import com.opsautoagent.domain.codeops.agent.recovery.RecoveryDecision;
+import com.opsautoagent.domain.codeops.agent.runtime.AgentExecutionContext;
+import com.opsautoagent.domain.codeops.agent.runtime.AgentRuntimeService;
+import com.opsautoagent.domain.codeops.agent.runtime.AgentStepTrace;
+import com.opsautoagent.domain.codeops.agent.security.HumanApprovalGate;
 import com.alibaba.fastjson.JSON;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -45,6 +50,8 @@ public class EngineeringTaskAgentService {
     private final ContextCompactionService compactionService;
     private final ErrorRecoveryPolicy recoveryPolicy;
     private final IncidentMemoryService incidentMemoryService;
+    private final HumanApprovalGate humanApprovalGate;
+    private final AgentRuntimeService agentRuntimeService;
 
     private final ConcurrentMap<String, EngineeringTaskEntity> taskStore = new ConcurrentHashMap<>();
 
@@ -53,13 +60,17 @@ public class EngineeringTaskAgentService {
                                        EngineeringToolGateway toolGateway,
                                        ContextCompactionService compactionService,
                                        ErrorRecoveryPolicy recoveryPolicy,
-                                       IncidentMemoryService incidentMemoryService) {
+                                       IncidentMemoryService incidentMemoryService,
+                                       HumanApprovalGate humanApprovalGate,
+                                       AgentRuntimeService agentRuntimeService) {
         this.skillRegistry = skillRegistry;
         this.orchestratorPolicy = orchestratorPolicy;
         this.toolGateway = toolGateway;
         this.compactionService = compactionService;
         this.recoveryPolicy = recoveryPolicy;
         this.incidentMemoryService = incidentMemoryService;
+        this.humanApprovalGate = humanApprovalGate;
+        this.agentRuntimeService = agentRuntimeService;
     }
 
     public EngineeringTaskEntity submit(EngineeringTaskEntity request) {
@@ -138,9 +149,39 @@ public class EngineeringTaskAgentService {
             stopReason = "达到最大执行轮数，任务停止。";
             addStopStep(task, (task.getSteps() == null ? 0 : task.getSteps().size()) + 1, stopReason);
         }
-        task.setStatus(isFailureStop(task, stopReason) ? "FAILED" : "COMPLETED");
+        boolean failed = isFailureStop(task, stopReason);
+        if (failed) {
+            task.setStatus("FAILED");
+        } else if (submitApprovalIfNeeded(task)) {
+            task.setStatus("WAITING_APPROVAL");
+        } else {
+            task.setStatus("COMPLETED");
+        }
+        attachGuardrailSummary(task);
         task.setFinalSummary(buildFinalSummary(task));
         task.setUpdateTime(LocalDateTime.now());
+    }
+
+    public HumanApprovalGate.ApprovalRecord approveTask(String taskId) {
+        HumanApprovalGate.ApprovalRecord record = humanApprovalGate.approve(taskId);
+        EngineeringTaskEntity task = taskStore.get(taskId);
+        if (task != null) {
+            task.setStatus("COMPLETED");
+            task.setFinalSummary(appendLine(task.getFinalSummary(), "人工审批已通过，任务完成。"));
+            task.setUpdateTime(LocalDateTime.now());
+        }
+        return record;
+    }
+
+    public HumanApprovalGate.ApprovalRecord rejectTask(String taskId, String reason) {
+        HumanApprovalGate.ApprovalRecord record = humanApprovalGate.reject(taskId, reason);
+        EngineeringTaskEntity task = taskStore.get(taskId);
+        if (task != null) {
+            task.setStatus("HUMAN_REJECTED");
+            task.setFinalSummary(appendLine(task.getFinalSummary(), "人工审批已拒绝：" + reason));
+            task.setUpdateTime(LocalDateTime.now());
+        }
+        return record;
     }
 
     private void executeSkill(EngineeringTaskEntity task, int stepNo, IncidentFixOrchestratorDecision decision) {
@@ -159,19 +200,282 @@ public class EngineeringTaskAgentService {
             return;
         }
         EngineeringSkill skill = optionalSkill.get();
-        EngineeringSkillResultEntity result = skill.execute(task);
-        task.setUsedToolCalls(task.getUsedToolCalls() + estimateToolCalls(skill.metadata()));
-        mergeSkillOutput(task, skillId, result);
-        task.addStep(EngineeringTaskStepEntity.builder()
-                .stepNo(stepNo)
-                .decision(decision.getDecision())
-                .selectedSkill(skillId)
-                .reason(decision.getReason())
-                .expectedEvidence(result.getEvidence())
-                .resultSummary(result.getSummary())
-                .rawEvidenceJson(JSON.toJSONString(result.getRawOutput()))
-                .status(result.getStatus())
-                .build());
+        IncidentFixWorkingMemory workingMemory = getOrCreateWorkingMemory(task);
+        AgentExecutionContext runtimeContext = agentRuntimeService.begin(task, stepNo, decision, skill,
+                workingMemory, MAX_REFLECTION_ROUNDS, integerValue(task.getContext() == null
+                        ? null : task.getContext().get("incidentFixReflectionRound")));
+        try {
+            EngineeringSkillResultEntity result = skill.execute(task);
+            task.setUsedToolCalls(task.getUsedToolCalls() + estimateToolCalls(skill.metadata()));
+            AgentStepTrace runtimeTrace = agentRuntimeService.finish(task, runtimeContext, result);
+            mergeSkillOutput(task, skillId, result);
+            Map<String, Object> rawEvidence = enrichRawOutputWithRuntime(task, result == null ? null : result.getRawOutput(), runtimeTrace);
+            task.addStep(EngineeringTaskStepEntity.builder()
+                    .stepNo(stepNo)
+                    .decision(decision.getDecision())
+                    .selectedSkill(skillId)
+                    .reason(decision.getReason())
+                    .expectedEvidence(result == null ? List.of() : result.getEvidence())
+                    .resultSummary(result == null ? "" : result.getSummary())
+                    .rawEvidenceJson(JSON.toJSONString(rawEvidence))
+                    .status(result == null ? "FAILED" : result.getStatus())
+                    .build());
+        } catch (Exception e) {
+            AgentStepTrace runtimeTrace = agentRuntimeService.fail(task, runtimeContext, e);
+            Map<String, Object> rawEvidence = enrichRawOutputWithRuntime(task, Map.of(
+                    "errorType", e.getClass().getSimpleName(),
+                    "errorMessage", e.getMessage() == null ? "" : e.getMessage()
+            ), runtimeTrace);
+            task.addStep(EngineeringTaskStepEntity.builder()
+                    .stepNo(stepNo)
+                    .decision(decision.getDecision())
+                    .selectedSkill(skillId)
+                    .reason(decision.getReason())
+                    .expectedEvidence(List.of())
+                    .resultSummary("执行失败：" + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()))
+                    .rawEvidenceJson(JSON.toJSONString(rawEvidence))
+                    .status("FAILED")
+                    .build());
+            log.warn("CodeOps agent skill failed. taskId={}, skillId={}, stepNo={}",
+                    task.getTaskId(), skillId, stepNo, e);
+        }
+    }
+
+    private Map<String, Object> enrichRawOutputWithRuntime(EngineeringTaskEntity task,
+                                                           Map<String, Object> rawOutput,
+                                                           AgentStepTrace runtimeTrace) {
+        Map<String, Object> enriched = new LinkedHashMap<>();
+        if (rawOutput != null) {
+            enriched.putAll(rawOutput);
+        }
+        if (runtimeTrace == null) {
+            return enriched;
+        }
+        Map<String, Object> runtime = new LinkedHashMap<>();
+        runtime.put("executionId", runtimeTrace.getExecutionId());
+        runtime.put("traceId", runtimeTrace.getTraceId());
+        runtime.put("stepNo", runtimeTrace.getStepNo());
+        runtime.put("agentOrSkill", runtimeTrace.getAgentOrSkill());
+        runtime.put("status", runtimeTrace.getStatus());
+        runtime.put("costMillis", runtimeTrace.getCostMillis());
+        runtime.put("budget", runtimeTrace.getBudget());
+        runtime.put("toolConstraints", runtimeTrace.getToolConstraints());
+        runtime.put("outputHighlights", runtimeTrace.getOutputHighlights());
+        runtime.put("errorType", runtimeTrace.getErrorType());
+        runtime.put("errorMessage", runtimeTrace.getErrorMessage());
+        List<Map<String, Object>> toolRuntime = collectToolRuntime(task, runtimeTrace.getExecutionId());
+        runtime.put("toolCalls", toolRuntime);
+        enriched.put("agentRuntime", runtime);
+        enriched.put("toolRuntime", toolRuntime);
+        return enriched;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> collectToolRuntime(EngineeringTaskEntity task, String executionId) {
+        if (task == null || task.getContext() == null || executionId == null || executionId.isBlank()) {
+            return List.of();
+        }
+        Object value = task.getContext().get("toolRuntimeTrace");
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        List<Map<String, Object>> records = new ArrayList<>();
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> rawMap)) {
+                continue;
+            }
+            Object recordExecutionId = rawMap.get("executionId");
+            if (!executionId.equals(String.valueOf(recordExecutionId))) {
+                continue;
+            }
+            Map<String, Object> record = new LinkedHashMap<>();
+            rawMap.forEach((key, rawValue) -> record.put(String.valueOf(key), rawValue));
+            records.add(record);
+        }
+        return records;
+    }
+
+    private boolean submitApprovalIfNeeded(EngineeringTaskEntity task) {
+        if (task == null || task.getSteps() == null || task.getSteps().isEmpty()) {
+            return false;
+        }
+        if (!"INCIDENT_TO_FIX".equals(task.getTaskType())) {
+            return false;
+        }
+        Map<String, Object> raw = collectLatestRawOutputs(task);
+        boolean patchGenerated = Boolean.TRUE.equals(raw.get("llmGenerated"));
+        boolean testsPassed = latestSkillStatus(task, TestVerificationSkill.SKILL_ID, "SUCCESS")
+                && hasRealPassingTestResult(raw);
+        String riskLevel = extractRiskLevel(raw);
+        Map<String, Object> evidenceCoverage = mapValue(raw.get("evidenceCoverage"));
+        Map<String, Object> patchQuality = mapValue(raw.get("patchQuality"));
+        Map<String, Object> patchSandbox = mapValue(raw.get("patchSandbox"));
+        List<String> approvalReasons = approvalReasons(riskLevel, patchGenerated, testsPassed,
+                evidenceCoverage, patchQuality, patchSandbox);
+        boolean approvalRequired = humanApprovalGate.isApprovalRequired(riskLevel, patchGenerated, testsPassed)
+                || (!approvalReasons.isEmpty() && patchGenerated && testsPassed);
+        if (!approvalRequired) {
+            return false;
+        }
+        if (humanApprovalGate.getStatus(task.getTaskId()) != null) {
+            return true;
+        }
+        humanApprovalGate.submitForApproval(
+                task.getTaskId(),
+                value(task.getGoal(), task.getTaskId()),
+                String.valueOf(raw.getOrDefault("rootCause", "")),
+                abbreviate(String.valueOf(raw.getOrDefault("patchDraft", "")), 1200),
+                stringList(raw.get("changedFiles")),
+                riskLevel,
+                abbreviate(String.valueOf(raw.getOrDefault("testExecutionResults", "")), 1200),
+                approvalReasons,
+                evidenceCoverage,
+                patchQuality,
+                patchSandbox
+        );
+        return true;
+    }
+
+    private Map<String, Object> collectLatestRawOutputs(EngineeringTaskEntity task) {
+        Map<String, Object> raw = new LinkedHashMap<>();
+        for (EngineeringTaskStepEntity step : task.getSteps()) {
+            String json = step.getRawEvidenceJson();
+            if (json == null || json.isBlank()) {
+                continue;
+            }
+            try {
+                Object parsed = JSON.parse(json);
+                if (parsed instanceof Map<?, ?> map) {
+                    map.forEach((key, value) -> raw.put(String.valueOf(key), value));
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return raw;
+    }
+
+    private boolean latestSkillStatus(EngineeringTaskEntity task, String skillId, String expectedStatus) {
+        return task.getSteps().stream()
+                .filter(step -> skillId.equals(step.getSelectedSkill()))
+                .reduce((first, second) -> second)
+                .map(step -> expectedStatus.equals(step.getStatus()))
+                .orElse(false);
+    }
+
+    private boolean hasRealPassingTestResult(Map<String, Object> raw) {
+        Object value = raw.get("testExecutionResults");
+        String text = "";
+        if (value instanceof List<?> list) {
+            text = String.join("\n", list.stream().map(String::valueOf).toList());
+        } else if (value != null) {
+            text = String.valueOf(value);
+        }
+        if (text.isBlank() || text.contains("真实测试执行未开启")) {
+            return false;
+        }
+        String lower = text.toLowerCase(Locale.ROOT);
+        if (lower.contains("\"success\":false") || lower.contains("\"success\": false")
+                || lower.contains("exitcode=1") || lower.contains("exit code: 1")
+                || lower.contains("build failure") || lower.contains("<<< failure!")) {
+            return false;
+        }
+        java.util.regex.Matcher failures = java.util.regex.Pattern.compile("failures:\\s*(\\d+)").matcher(lower);
+        if (failures.find() && Integer.parseInt(failures.group(1)) > 0) {
+            return false;
+        }
+        java.util.regex.Matcher errors = java.util.regex.Pattern.compile("errors:\\s*(\\d+)").matcher(lower);
+        if (errors.find() && Integer.parseInt(errors.group(1)) > 0) {
+            return false;
+        }
+        return lower.contains("build success")
+                || lower.contains("\"success\":true")
+                || (lower.contains("tests run:") && lower.contains("failures: 0") && lower.contains("errors: 0"));
+    }
+
+    private String extractRiskLevel(Map<String, Object> raw) {
+        Object report = raw.get("releaseRiskReport");
+        if (report instanceof Map<?, ?> map && map.get("riskLevel") != null) {
+            return String.valueOf(map.get("riskLevel"));
+        }
+        Object direct = raw.get("riskLevel");
+        return direct == null ? "LOW" : String.valueOf(direct);
+    }
+
+    private List<String> stringList(Object value) {
+        if (value instanceof List<?> list) {
+            return list.stream().map(String::valueOf).toList();
+        }
+        return List.of();
+    }
+
+    private List<String> approvalReasons(String riskLevel,
+                                         boolean patchGenerated,
+                                         boolean testsPassed,
+                                         Map<String, Object> evidenceCoverage,
+                                         Map<String, Object> patchQuality,
+                                         Map<String, Object> patchSandbox) {
+        if (!patchGenerated || !testsPassed) {
+            return List.of();
+        }
+        List<String> reasons = new ArrayList<>();
+        if ("HIGH".equalsIgnoreCase(riskLevel) || "CRITICAL".equalsIgnoreCase(riskLevel)) {
+            reasons.add("release risk is " + riskLevel);
+        }
+        if (Boolean.TRUE.equals(patchQuality.get("requiresHumanApproval"))) {
+            reasons.add("patch quality gate requires human approval");
+        }
+        if (patchQuality.containsKey("minimalChangeScore")
+                && integerValue(patchQuality.get("minimalChangeScore")) < 70) {
+            reasons.add("minimal change score is below 70");
+        }
+        if (Boolean.FALSE.equals(patchQuality.get("staticSafetyPassed"))) {
+            reasons.add("patch static safety did not pass");
+        }
+        if (Boolean.FALSE.equals(patchSandbox.get("isolated"))) {
+            reasons.add("patch was not verified in an isolated sandbox");
+        }
+        if (Boolean.TRUE.equals(evidenceCoverage.get("fixtureFallbackUsed"))) {
+            reasons.add("diagnosis used fixture fallback evidence");
+        }
+        double realCoverage = doubleValue(evidenceCoverage.get("realEvidenceCoverage"));
+        if (realCoverage > 0D && realCoverage < 0.67D) {
+            reasons.add("real telemetry evidence coverage is below 67%");
+        }
+        return reasons;
+    }
+
+    private Map<String, Object> mapValue(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            map.forEach((key, item) -> result.put(String.valueOf(key), item));
+            return result;
+        }
+        return Map.of();
+    }
+
+    private double doubleValue(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        if (value == null) {
+            return 0D;
+        }
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            return 0D;
+        }
+    }
+
+    private String appendLine(String existing, String line) {
+        if (existing == null || existing.isBlank()) {
+            return line;
+        }
+        return existing + "\n" + line;
+    }
+
+    private String value(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 
     @SuppressWarnings("unchecked")
@@ -683,11 +987,53 @@ public class EngineeringTaskAgentService {
         }
     }
 
+    private void attachGuardrailSummary(EngineeringTaskEntity task) {
+        Map<String, Object> summary = buildGuardrailSummary(task);
+        Map<String, Object> context = new LinkedHashMap<>();
+        if (task.getContext() != null) {
+            context.putAll(task.getContext());
+        }
+        context.put("guardrailSummary", summary);
+        IncidentFixWorkingMemory workingMemory = getOrCreateWorkingMemory(task, context);
+        workingMemory.setSafetySummary(summary);
+        context.put("incidentFixWorkingMemory", workingMemory);
+        task.setContext(context);
+    }
+
+    private Map<String, Object> buildGuardrailSummary(EngineeringTaskEntity task) {
+        Map<String, Object> raw = collectLatestRawOutputs(task);
+        Map<String, Object> evidenceCoverage = mapValue(raw.get("evidenceCoverage"));
+        Map<String, Object> patchQuality = mapValue(raw.get("patchQuality"));
+        Map<String, Object> patchSandbox = mapValue(raw.get("patchSandbox"));
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("realEvidenceCoverage", evidenceCoverage.getOrDefault("realEvidenceCoverage", 0D));
+        summary.put("fixtureFallbackUsed", evidenceCoverage.getOrDefault("fixtureFallbackUsed", false));
+        summary.put("patchSandboxMode", patchSandbox.getOrDefault("mode", ""));
+        summary.put("patchSandboxIsolated", patchSandbox.getOrDefault("isolated", false));
+        summary.put("patchStaticSafetyPassed", patchQuality.getOrDefault("staticSafetyPassed", false));
+        summary.put("minimalChangeScore", patchQuality.getOrDefault("minimalChangeScore", 0));
+        summary.put("testsPassed", hasRealPassingTestResult(raw));
+        summary.put("approvalStatus", humanApprovalGate.getStatus(task.getTaskId()) == null
+                ? "NOT_REQUIRED_OR_NOT_SUBMITTED"
+                : humanApprovalGate.getStatus(task.getTaskId()).getStatus());
+        summary.put("approvalReasons", approvalReasons(extractRiskLevel(raw),
+                Boolean.TRUE.equals(raw.get("llmGenerated")),
+                hasRealPassingTestResult(raw),
+                evidenceCoverage, patchQuality, patchSandbox));
+        return summary;
+    }
+
     private String buildFinalSummary(EngineeringTaskEntity task) {
         String outcome = "FAILED".equals(task.getStatus()) ? "执行失败或未收敛" : "执行完成";
+        Map<String, Object> guardrail = task.getContext() == null ? Map.of() : mapValue(task.getContext().get("guardrailSummary"));
         return "CodeOps Incident-to-Fix 任务" + outcome + "：taskType=" + task.getTaskType()
                 + "，steps=" + (task.getSteps() == null ? 0 : task.getSteps().size())
                 + "，usedToolCalls=" + task.getUsedToolCalls()
+                + "，realEvidenceCoverage=" + guardrail.getOrDefault("realEvidenceCoverage", "N/A")
+                + "，patchSandboxIsolated=" + guardrail.getOrDefault("patchSandboxIsolated", "N/A")
+                + "，patchStaticSafetyPassed=" + guardrail.getOrDefault("patchStaticSafetyPassed", "N/A")
+                + "，minimalChangeScore=" + guardrail.getOrDefault("minimalChangeScore", "N/A")
+                + "，approvalStatus=" + guardrail.getOrDefault("approvalStatus", "N/A")
                 + "。当前已由 Orchestrator 根据 IncidentFixWorkingMemory 逐步选择 Agent，并将线上诊断、代码定位、修复生成、测试验证和发布风险产物写入共享记忆。";
     }
 

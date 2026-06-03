@@ -4,6 +4,7 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.opsautoagent.domain.codeops.agent.llm.CodeOpsCompatibleChatClient;
+import com.opsautoagent.domain.codeops.agent.llm.ModelRouter;
 import com.opsautoagent.domain.codeops.model.entity.ReleaseRiskReportEntity;
 import com.opsautoagent.domain.ops.agent.chat.OpsChatAgentJsonSupport;
 import lombok.extern.slf4j.Slf4j;
@@ -14,6 +15,7 @@ import jakarta.annotation.Resource;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Service
@@ -21,6 +23,9 @@ public class CodeOpsReleaseRiskAgentService {
 
     @Resource
     private CodeOpsCompatibleChatClient compatibleChatClient;
+
+    @Resource
+    private ModelRouter modelRouter;
 
     @Value("${codeops.agent.release-risk.llm.enabled:true}")
     private boolean llmReleaseRiskEnabled;
@@ -37,10 +42,19 @@ public class CodeOpsReleaseRiskAgentService {
         }
         CodeOpsReleaseRiskAgentInput normalizedInput = normalize(input);
         String prompt = CodeOpsReleaseRiskPrompts.buildPrompt(normalizedInput);
+        boolean reflectionExhausted = normalizedInput.getReflectionFailures() != null
+                && normalizedInput.getReflectionFailures().size() >= 3;
+        ModelRouter.ModelDecision modelDecision = modelRouter.decideForReleaseRisk(reflectionExhausted);
         long start = System.currentTimeMillis();
         try {
-            String content = compatibleChatClient.call(prompt);
+            String content = compatibleChatClient.call(prompt, modelDecision.getModel(), modelDecision.getMaxTokens());
             CodeOpsReleaseRiskAgentOutput parsed = parse(content, normalizedInput.getBaselineReport());
+            parsed.setModelRouting(Map.of(
+                    "model", modelDecision.getModel(),
+                    "modelTier", modelDecision.getModel().contains("flash") ? "flash" : "pro",
+                    "reason", modelDecision.getReason(),
+                    "reflectionExhausted", reflectionExhausted
+            ));
             parsed.setCostMillis(System.currentTimeMillis() - start);
             parsed.setRawContent(content == null ? "" : content);
             parsed.setCreateTime(LocalDateTime.now());
@@ -53,6 +67,12 @@ public class CodeOpsReleaseRiskAgentService {
                     .report(input.getBaselineReport())
                     .reasoning(List.of())
                     .humanApprovalPoints(List.of("Release risk LLM failed: " + e.getMessage()))
+                    .modelRouting(Map.of(
+                            "model", modelDecision.getModel(),
+                            "modelTier", modelDecision.getModel().contains("flash") ? "flash" : "pro",
+                            "reason", modelDecision.getReason(),
+                            "reflectionExhausted", reflectionExhausted
+                    ))
                     .rawContent("")
                     .errorMessage(e.getMessage())
                     .costMillis(System.currentTimeMillis() - start)

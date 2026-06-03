@@ -28,5 +28,33 @@ public class RunbookMatchEntity {
 
     private String content;
 
+    private String retrievalMode;
+
+    private Integer vectorScore;
+
+    private Integer keywordScore;
+
+    private Integer bm25Score;
+
+    private Integer hybridScore;
+
+    private Integer lexicalBoostScore;
+
+    private Integer crossEncoderScore;
+
+    private Integer rank;
+
+    private String rankExplanation;
+
+    private String chunkId;
+
+    private Integer chunkIndex;
+
+    private Integer chunkCount;
+
+    private String documentVersion;
+
+    private String documentHash;
+
 }
 

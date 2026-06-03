@@ -20,11 +20,8 @@ public class OrderSubmitService {
         if (request.getUnitPrice() == null || request.getQuantity() == null) throw new IllegalArgumentException("Unit price and quantity must not be null");
         if (idempotencyService == null) throw new IllegalStateException("IdempotencyService not configured");
         if (inventoryService == null) throw new IllegalStateException("InventoryService not configured");
-        synchronized (idempotencyService) {
-            if (idempotencyService.alreadyProcessed(request.getRequestId())) {
-                throw new IllegalStateException("Duplicate requestId " + request.getRequestId());
-            }
-            idempotencyService.markProcessed(request.getRequestId());
+        if (!idempotencyService.tryMarkProcessed(request.getRequestId())) {
+            throw new IllegalStateException("Duplicate requestId " + request.getRequestId());
         }
         inventoryService.reserve(request.getSkuId(), request.getQuantity());
         BigDecimal totalAmount = request.getUnitPrice().multiply(BigDecimal.valueOf(request.getQuantity()));

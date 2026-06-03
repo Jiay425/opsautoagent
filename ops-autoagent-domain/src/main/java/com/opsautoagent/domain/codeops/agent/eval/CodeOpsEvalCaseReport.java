@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
 
 @Data
 @Builder
@@ -32,6 +33,11 @@ public class CodeOpsEvalCaseReport {
     private boolean reflectionRecovered;
     private boolean releaseRiskGenerated;
     private String finalRiskLevel;
+    private double realEvidenceCoverage;
+    private boolean fixtureEvidenceUsed;
+    private Map<String, Object> evidenceSourceSummary;
+    private Map<String, Object> patchQuality;
+    private Map<String, Object> patchSandbox;
     private String failureType;
     private String failureSummary;
     private List<CodeOpsEvalStepReport> steps;

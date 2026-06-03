@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.nio.file.Path;
 
 /**
  * Agent permission policy — defines what an agent task can and cannot do.
@@ -97,6 +98,25 @@ public class AgentPermissionPolicy {
 
         log.warn("COMMAND_NOT_ALLOWED: {} (first word: {})", command, firstWord);
         return false;
+    }
+
+    public boolean isWriteAllowed(String repositoryPath, String relativePath) {
+        if (repositoryPath == null || repositoryPath.isBlank()
+                || relativePath == null || relativePath.isBlank()) {
+            return false;
+        }
+        Path repo = Path.of(repositoryPath).toAbsolutePath().normalize();
+        Path target = repo.resolve(relativePath).normalize();
+        if (!target.startsWith(repo)) {
+            log.warn("WRITE_NOT_ALLOWED: {} escapes repository {}", relativePath, repositoryPath);
+            return false;
+        }
+        Path srcRoot = repo.resolve("src").normalize();
+        boolean allowed = target.startsWith(srcRoot);
+        if (!allowed) {
+            log.warn("WRITE_NOT_ALLOWED: {} is outside {}", relativePath, srcRoot);
+        }
+        return allowed;
     }
 
     public static class PolicyDecision {

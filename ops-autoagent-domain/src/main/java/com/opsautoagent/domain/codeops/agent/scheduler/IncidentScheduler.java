@@ -110,10 +110,10 @@ public class IncidentScheduler {
 
         // Only enqueue once per aggregated incident (when alertCount == 1)
         if (aggregated.getAlertCount() == 1) {
-            priorityQueue.enqueue(aggregated);
+            return priorityQueue.enqueue(aggregated);
         }
 
-        return null; // Return null — dispatch runs async on schedule
+        return null;
     }
 
     /**

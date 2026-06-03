@@ -38,7 +38,11 @@ public class HumanApprovalGate {
     public ApprovalRecord submitForApproval(String taskId, String caseName,
                                              String rootCause, String patchSummary,
                                              List<String> changedFiles, String riskLevel,
-                                             String testResults) {
+                                             String testResults,
+                                             List<String> approvalReasons,
+                                             Map<String, Object> evidenceSummary,
+                                             Map<String, Object> patchQuality,
+                                             Map<String, Object> patchSandbox) {
         ApprovalRecord record = ApprovalRecord.builder()
                 .taskId(taskId)
                 .caseName(caseName)
@@ -48,6 +52,10 @@ public class HumanApprovalGate {
                 .changedFiles(changedFiles)
                 .riskLevel(riskLevel)
                 .testResults(testResults)
+                .approvalReasons(approvalReasons == null ? List.of() : approvalReasons)
+                .evidenceSummary(evidenceSummary == null ? Map.of() : evidenceSummary)
+                .patchQuality(patchQuality == null ? Map.of() : patchQuality)
+                .patchSandbox(patchSandbox == null ? Map.of() : patchSandbox)
                 .submittedAt(LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
                 .build();
         pendingApprovals.put(taskId, record);
@@ -60,7 +68,6 @@ public class HumanApprovalGate {
      * Check if approval is required for this task (based on riskLevel or config).
      */
     public boolean isApprovalRequired(String riskLevel, boolean patchGenerated, boolean testsPassed) {
-        // Always require approval if patch was generated
         if (patchGenerated && testsPassed) {
             return "HIGH".equalsIgnoreCase(riskLevel) || "CRITICAL".equalsIgnoreCase(riskLevel);
         }
@@ -111,6 +118,10 @@ public class HumanApprovalGate {
         private List<String> changedFiles;
         private String riskLevel;
         private String testResults;
+        private List<String> approvalReasons;
+        private Map<String, Object> evidenceSummary;
+        private Map<String, Object> patchQuality;
+        private Map<String, Object> patchSandbox;
         private String submittedAt;
         private String approvedAt;
         private String rejectionReason;
@@ -127,6 +138,10 @@ public class HumanApprovalGate {
             public Builder changedFiles(List<String> v) { r.changedFiles = v; return this; }
             public Builder riskLevel(String v) { r.riskLevel = v; return this; }
             public Builder testResults(String v) { r.testResults = v; return this; }
+            public Builder approvalReasons(List<String> v) { r.approvalReasons = v; return this; }
+            public Builder evidenceSummary(Map<String, Object> v) { r.evidenceSummary = v; return this; }
+            public Builder patchQuality(Map<String, Object> v) { r.patchQuality = v; return this; }
+            public Builder patchSandbox(Map<String, Object> v) { r.patchSandbox = v; return this; }
             public Builder submittedAt(String v) { r.submittedAt = v; return this; }
             public Builder approvedAt(String v) { r.approvedAt = v; return this; }
             public Builder rejectionReason(String v) { r.rejectionReason = v; return this; }
@@ -149,6 +164,14 @@ public class HumanApprovalGate {
         public void setRiskLevel(String v) { riskLevel = v; }
         public String getTestResults() { return testResults; }
         public void setTestResults(String v) { testResults = v; }
+        public List<String> getApprovalReasons() { return approvalReasons; }
+        public void setApprovalReasons(List<String> v) { approvalReasons = v; }
+        public Map<String, Object> getEvidenceSummary() { return evidenceSummary; }
+        public void setEvidenceSummary(Map<String, Object> v) { evidenceSummary = v; }
+        public Map<String, Object> getPatchQuality() { return patchQuality; }
+        public void setPatchQuality(Map<String, Object> v) { patchQuality = v; }
+        public Map<String, Object> getPatchSandbox() { return patchSandbox; }
+        public void setPatchSandbox(Map<String, Object> v) { patchSandbox = v; }
         public String getSubmittedAt() { return submittedAt; }
         public void setSubmittedAt(String v) { submittedAt = v; }
         public String getApprovedAt() { return approvedAt; }
@@ -166,6 +189,10 @@ public class HumanApprovalGate {
             m.put("changedFiles", changedFiles);
             m.put("riskLevel", riskLevel);
             m.put("testResults", testResults);
+            m.put("approvalReasons", approvalReasons == null ? List.of() : approvalReasons);
+            m.put("evidenceSummary", evidenceSummary == null ? Map.of() : evidenceSummary);
+            m.put("patchQuality", patchQuality == null ? Map.of() : patchQuality);
+            m.put("patchSandbox", patchSandbox == null ? Map.of() : patchSandbox);
             m.put("submittedAt", submittedAt);
             m.put("approvedAt", approvedAt);
             m.put("rejectionReason", rejectionReason);

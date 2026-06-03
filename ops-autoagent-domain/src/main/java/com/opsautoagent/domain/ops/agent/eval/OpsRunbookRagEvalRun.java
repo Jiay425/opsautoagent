@@ -39,6 +39,8 @@ public class OpsRunbookRagEvalRun {
 
     private Long latencyMs;
 
+    private String failureReason;
+
     private String errorMessage;
 
 }

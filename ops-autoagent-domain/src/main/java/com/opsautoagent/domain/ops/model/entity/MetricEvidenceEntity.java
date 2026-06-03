@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
 
 @Data
 @Builder
@@ -22,6 +23,8 @@ public class MetricEvidenceEntity {
     private List<String> observations;
 
     private String rawData;
+
+    private Map<String, Object> sourceMetadata;
 
 }
 
