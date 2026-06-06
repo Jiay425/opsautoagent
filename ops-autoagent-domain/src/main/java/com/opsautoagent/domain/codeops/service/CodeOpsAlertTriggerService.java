@@ -37,22 +37,29 @@ public class CodeOpsAlertTriggerService {
         }
         threadPoolExecutor.execute(() -> {
             try {
-                EngineeringTaskEntity task = engineeringTaskAgentService.submit(EngineeringTaskEntity.builder()
-                        .taskType("INCIDENT_TO_FIX")
-                        .goal(buildGoal(alertEvent, command))
-                        .repository(resolveRepository(alertEvent))
-                        .focusAreas(List.of("incident", "code_location", "bug_fix", "test_verification", "release_risk"))
-                        .context(buildContext(alertEvent, command))
-                        .maxRounds(8)
-                        .maxToolCalls(50)
-                        .build());
+                EngineeringTaskEntity task = submitIncidentToFixSync(alertEvent, command);
                 log.info("CodeOps Incident-to-Fix task submitted from alert. eventId={}, diagnosisId={}, taskId={}",
-                        alertEvent.getEventId(), command.getDiagnosisId(), task.getTaskId());
+                        alertEvent.getEventId(), command.getDiagnosisId(), task == null ? "" : task.getTaskId());
             } catch (Exception e) {
                 log.warn("Submit CodeOps Incident-to-Fix task failed. eventId={}, diagnosisId={}",
                         alertEvent.getEventId(), command.getDiagnosisId(), e);
             }
         });
+    }
+
+    public EngineeringTaskEntity submitIncidentToFixSync(OpsAlertEventEntity alertEvent, IncidentCommandEntity command) {
+        if (!alertTriggerEnabled) {
+            return null;
+        }
+        return engineeringTaskAgentService.submit(EngineeringTaskEntity.builder()
+                .taskType("INCIDENT_TO_FIX")
+                .goal(buildGoal(alertEvent, command))
+                .repository(resolveRepository(alertEvent))
+                .focusAreas(List.of("incident", "code_location", "knowledge_rag", "bug_fix", "test_verification", "release_risk"))
+                .context(buildContext(alertEvent, command))
+                .maxRounds(8)
+                .maxToolCalls(50)
+                .build());
     }
 
     private String buildGoal(OpsAlertEventEntity alertEvent, IncidentCommandEntity command) {

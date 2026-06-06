@@ -11,8 +11,9 @@ public class OrderRepository {
     private final List<String> createdOrderIds = Collections.synchronizedList(new ArrayList<>());
 
     public String create(String userId, String skuId, int quantity, BigDecimal totalAmount) {
+        String normalizedUserId = userId.trim();
         String orderId = "ORD-" + UUID.randomUUID();
-        createdOrderIds.add(orderId);
+        createdOrderIds.add(normalizedUserId + ":" + orderId);
         return orderId;
     }
 

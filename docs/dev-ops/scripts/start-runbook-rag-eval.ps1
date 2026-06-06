@@ -37,8 +37,10 @@ function Require-Env([string]$Name) {
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..\..")
 Set-Location $repoRoot
 
-if (-not $env:JAVA_HOME) {
+if (Test-Path "D:\Java\jdk17") {
     $env:JAVA_HOME = "D:\Java\jdk17"
+} elseif (-not $env:JAVA_HOME) {
+    throw "JAVA_HOME is not set and D:\Java\jdk17 does not exist"
 }
 $env:Path = "$env:JAVA_HOME\bin;$env:Path"
 
@@ -69,9 +71,16 @@ if (-not $SkipInstall) {
     mvn -q -DskipTests install
 }
 
-Write-Host "Starting app with full profile..."
-Start-Process -FilePath "mvn" `
-    -ArgumentList @("-q", "-pl", "ops-autoagent-app", "-am", "spring-boot:run", "-Dspring-boot.run.profiles=full") `
+Write-Host "Packaging app jar..."
+mvn -q -pl ops-autoagent-app -am -DskipTests package
+
+Write-Host "Starting app jar with full profile..."
+$appJar = Join-Path $repoRoot "ops-autoagent-app\target\ops-autoagent-app.jar"
+if (-not (Test-Path $appJar)) {
+    throw "App jar not found: $appJar"
+}
+Start-Process -FilePath "java" `
+    -ArgumentList @("-jar", $appJar, "--spring.profiles.active=full") `
     -WorkingDirectory $repoRoot `
     -RedirectStandardOutput $appOut `
     -RedirectStandardError $appErr `

@@ -23,6 +23,8 @@ application-local.yml
 **/.env
 
 # Generated eval reports
+data/
+ops-autoagent-app/data/
 data/codeops-eval/
 data/log/
 data/incident-memory/

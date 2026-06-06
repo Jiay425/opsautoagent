@@ -27,6 +27,16 @@ scrape_configs:
           application: ops-demo-service
           service: ops-demo-service
 
+  - job_name: order-service
+    metrics_path: /actuator/prometheus
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - host.docker.internal:18081
+        labels:
+          application: order-service
+          service: order-service
+
   - job_name: node-exporter
     static_configs:
       - targets:

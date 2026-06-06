@@ -96,6 +96,18 @@ logging:
     com.opsautoagent: info
   config: classpath:logback-spring.xml
 
+codeops:
+  test:
+    execution:
+      enabled: ${CODEOPS_TEST_EXECUTION_ENABLED:true}
+      timeout-ms: ${CODEOPS_TEST_EXECUTION_TIMEOUT_MS:120000}
+  patch:
+    sandbox:
+      enabled: ${CODEOPS_PATCH_SANDBOX_ENABLED:true}
+      base-dir: ${CODEOPS_PATCH_SANDBOX_BASE_DIR:data/codeops-sandbox}
+      prefer-git-worktree: ${CODEOPS_PATCH_SANDBOX_PREFER_GIT_WORKTREE:false}
+      timeout-ms: ${CODEOPS_PATCH_SANDBOX_TIMEOUT_MS:30000}
+
 ops:
   alert:
     dedup-window-minutes: 5
@@ -201,7 +213,7 @@ ops:
       password:
     elk:
       base-url: http://127.0.0.1:9200
-      index-pattern: ops-demo-service-log-auto-*
+      index-pattern: ops-demo-service-log-*
       username:
       password:
     skywalking:

@@ -119,6 +119,28 @@ public class AgentPermissionPolicy {
         return allowed;
     }
 
+    public Map<String, Object> governanceSummary() {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("policyVersion", "codeops-agent-permission-v1");
+        summary.put("layers", List.of(
+                "read scope",
+                "write scope",
+                "command allowlist",
+                "blocked dangerous patterns",
+                "patch guard",
+                "snapshot rollback",
+                "human approval"
+        ));
+        summary.put("allowedCommands", ALLOWED_COMMANDS);
+        summary.put("blockedPatterns", GLOBAL_BLOCKED_PATTERNS);
+        summary.put("writeScope", "repository src/** only");
+        summary.put("blockedWriteTargets", List.of(".env", ".ssh/**", "pom.xml without approval", "scripts/config secrets"));
+        summary.put("patchGuardEnabled", true);
+        summary.put("rollbackEnabled", true);
+        summary.put("defaultApprovalRule", "HIGH/CRITICAL risk patch or guardrail reasons require human approval");
+        return summary;
+    }
+
     public static class PolicyDecision {
         private final Map<String, Object> policy;
 

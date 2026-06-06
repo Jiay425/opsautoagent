@@ -28,6 +28,17 @@ Alertmanager Webhook
 
 ### Key Features
 
+### Real Alertmanager Verification
+
+The framework has been verified with real Prometheus + Alertmanager firing alerts, not only fixture cases.
+
+| Scenario | Result | Evidence |
+|----------|--------|----------|
+| `OrderServiceHttp5xxHigh` | Code fix path completed | Real evidence coverage `1.0`; NPE stack localized to `OrderRepository.create(OrderRepository.java:14)`; patch applied in isolated sandbox; compile gate passed; Maven targeted tests and full `mvn test` passed |
+| `OrderServiceLatencyHigh` | No-code path completed | Real evidence coverage `1.0`; endpoint-scoped evidence isolation kept stale `/api/orders/submit` NPE logs out of code localization; no patch generated |
+
+The latest verification runs are written locally under `data/real-chain-runs/` and intentionally ignored by git.
+
 **Repair Scope System (Phase 1)**
 
 | scopeType | Trigger | Behavior |
@@ -120,6 +131,17 @@ Alertmanager Webhook
 ```
 
 ### 核心功能
+
+### 真实 Alertmanager 链路验证
+
+项目已经跑过真实 Prometheus + Alertmanager firing 告警链路，不只是 fixture 评测。
+
+| 场景 | 结果 | 验证点 |
+|------|------|--------|
+| `OrderServiceHttp5xxHigh` | 代码修复链路完成 | 真实证据覆盖率 `1.0`；NPE 栈定位到 `OrderRepository.create(OrderRepository.java:14)`；补丁应用到隔离沙箱；编译门通过；定向 Maven 测试和全量 `mvn test` 通过 |
+| `OrderServiceLatencyHigh` | 非代码修复链路完成 | 真实证据覆盖率 `1.0`；按当前告警 endpoint 做证据隔离，旧 `/api/orders/submit` NPE 日志不会污染代码定位；不生成补丁 |
+
+真实链路运行产物保存在本地 `data/real-chain-runs/`，已加入 gitignore，避免提交日志、沙箱和本地运行数据。
 
 **Repair Scope 修复作用域（Phase 1）**
 

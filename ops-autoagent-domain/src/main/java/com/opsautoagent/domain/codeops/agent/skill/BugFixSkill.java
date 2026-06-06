@@ -1235,6 +1235,15 @@ public class BugFixSkill implements EngineeringSkill {
             }
         }
 
+        if (codeLocalization != null
+                && !codeLocalization.isEmpty()
+                && "CODE_FIX".equals(strategyType)
+                && "HIGH".equalsIgnoreCase(localizationConfidence)
+                && !rawMethods.isEmpty()
+                && !rawFiles.isEmpty()) {
+            return buildHighConfidenceLocalizationScope(rawMethods, rawFiles, localizationConfidence, diagnosisClues);
+        }
+
         // --- Phase 3: Fallback — regex extract from suspiciousLocations ---
         if (rawMethods.isEmpty()) {
             java.util.regex.Pattern methodPattern = java.util.regex.Pattern
@@ -1501,6 +1510,105 @@ public class BugFixSkill implements EngineeringSkill {
             name = name.substring(0, name.length() - 5);
         }
         return name;
+    }
+
+    private Map<String, Object> buildHighConfidenceLocalizationScope(List<String> rawMethods,
+                                                                     List<String> rawFiles,
+                                                                     String localizationConfidence,
+                                                                     List<String> diagnosisClues) {
+        List<String> scopedMethods = rawMethods.stream()
+                .map(this::normalizeQualifiedMethod)
+                .filter(method -> !isBlank(method))
+                .filter(method -> method.contains("."))
+                .filter(method -> !method.startsWith("java.") && !method.startsWith("org.springframework."))
+                .distinct()
+                .toList();
+        if (scopedMethods.isEmpty()) {
+            scopedMethods = rawMethods.stream()
+                    .map(this::normalizeQualifiedMethod)
+                    .filter(method -> !isBlank(method))
+                    .distinct()
+                    .toList();
+        }
+
+        String targetMethod = scopedMethods.isEmpty() ? "" : scopedMethods.get(0);
+        String targetClass = classPart(targetMethod);
+        String targetFile = findFileForClass(rawFiles, targetClass);
+        String targetSimpleMethod = methodPart(targetMethod);
+        Map<String, List<String>> fileMethodMap = new LinkedHashMap<>();
+        if (!isBlank(targetFile) && !isBlank(targetSimpleMethod)) {
+            fileMethodMap.put(normalizeFilePath(targetFile), List.of(targetSimpleMethod));
+        }
+
+        List<String> candidateMethods = scopedMethods.stream()
+                .skip(1)
+                .toList();
+        boolean hasExceptionInDiagnosis = diagnosisClues.stream()
+                .anyMatch(c -> c.toLowerCase(Locale.ROOT).contains("npe")
+                        || c.toLowerCase(Locale.ROOT).contains("nullpointer")
+                        || c.toLowerCase(Locale.ROOT).contains("exception")
+                        || c.toLowerCase(Locale.ROOT).contains("stack"));
+
+        Map<String, Object> scope = new LinkedHashMap<>();
+        scope.put("scopeType", "STRICT_SINGLE_METHOD");
+        scope.put("targetMethods", isBlank(targetMethod) ? List.of() : List.of(targetMethod));
+        scope.put("targetFiles", isBlank(targetFile)
+                ? rawFiles.stream().map(this::normalizeFilePath).toList()
+                : List.of(normalizeFilePath(targetFile)));
+        scope.put("fileMethodMapping", fileMethodMap);
+        scope.put("candidateMethods", candidateMethods);
+        scope.put("ignoredMethods", List.of());
+        scope.put("scopeConfidence", hasExceptionInDiagnosis ? "HIGH" : "MEDIUM");
+        scope.put("scopeReasoning", "High-confidence CodeLocalization output selected first application stack method "
+                + targetMethod + " as strict repair boundary. Other localized methods are candidates only: "
+                + String.join(", ", candidateMethods) + ".");
+        scope.put("localizationConfidence", localizationConfidence);
+        scope.put("strategyType", "CODE_FIX");
+        return scope;
+    }
+
+    private String normalizeQualifiedMethod(String rawMethod) {
+        if (isBlank(rawMethod)) {
+            return "";
+        }
+        String method = rawMethod.trim();
+        int paren = method.indexOf('(');
+        if (paren >= 0) {
+            method = method.substring(0, paren);
+        }
+        String[] parts = method.split("\\.");
+        if (parts.length >= 2) {
+            return parts[parts.length - 2] + "." + parts[parts.length - 1];
+        }
+        return method;
+    }
+
+    private String classPart(String qualifiedMethod) {
+        if (isBlank(qualifiedMethod) || !qualifiedMethod.contains(".")) {
+            return "";
+        }
+        return qualifiedMethod.substring(0, qualifiedMethod.lastIndexOf('.'));
+    }
+
+    private String methodPart(String qualifiedMethod) {
+        if (isBlank(qualifiedMethod)) {
+            return "";
+        }
+        return qualifiedMethod.contains(".")
+                ? qualifiedMethod.substring(qualifiedMethod.lastIndexOf('.') + 1)
+                : qualifiedMethod;
+    }
+
+    private String findFileForClass(List<String> rawFiles, String className) {
+        if (isBlank(className)) {
+            return rawFiles == null || rawFiles.isEmpty() ? "" : rawFiles.get(0);
+        }
+        for (String rawFile : list(rawFiles)) {
+            if (className.equals(simpleClassName(rawFile))) {
+                return rawFile;
+            }
+        }
+        return rawFiles == null || rawFiles.isEmpty() ? "" : rawFiles.get(0);
     }
 
     private String normalizeFilePath(String filePath) {

@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -189,7 +190,7 @@ public class TestVerificationSkill implements EngineeringSkill {
         rawOutput.put("mavenCommands", plan.getMavenCommands());
         rawOutput.put("verificationNotes", plan.getVerificationNotes());
         rawOutput.put("testExecutionResults", plan.getTestExecutionResults());
-        rawOutput.put("baselinePlan", baselinePlan);
+        rawOutput.put("baselinePlan", planToMap(baselinePlan));
         rawOutput.put("llmTestPlanSuccess", agentOutput.isSuccess());
         rawOutput.put("llmTestPlanFallback", agentOutput.isFallback());
         rawOutput.put("mergedRepairAndTestAgent", mergedRepairAndTestAgent);
@@ -217,6 +218,8 @@ public class TestVerificationSkill implements EngineeringSkill {
         rawOutput.put("failedTestFiles", extractFailedTestFiles(testOutputText));
         rawOutput.put("failedAssertions", extractFailedAssertions(testOutputText));
         rawOutput.put("rawFailureSummary", abbreviate(testOutputText, 1500));
+        boolean testsPassed = hasPassingTestResult(plan.getTestExecutionResults());
+        rawOutput.put("testsPassed", testsPassed);
 
         boolean testPatchRequiredButFailed = shouldApplyTestPatch(task)
                 && testPatch.isSuccess()
@@ -224,7 +227,7 @@ public class TestVerificationSkill implements EngineeringSkill {
                 && !testPatchApply.isApplied();
         String status = (testPatchRequiredButFailed || testsFailed)
                 ? "FAILED"
-                : (Boolean.TRUE.equals(diffContext.getDiffAvailable()) ? "SUCCESS" : "NO_DIFF");
+                : (testsPassed || Boolean.TRUE.equals(diffContext.getDiffAvailable()) ? "SUCCESS" : "NO_DIFF");
 
         return EngineeringSkillResultEntity.builder()
                 .skillId(SKILL_ID)
@@ -279,6 +282,23 @@ public class TestVerificationSkill implements EngineeringSkill {
                 .verificationNotes(List.of("测试计划来自合并后的 Code Repair & Test Agent 输出，未额外调用 Test Plan LLM。"))
                 .testExecutionResults(List.of())
                 .build();
+    }
+
+    private Map<String, Object> planToMap(TestVerificationPlanEntity plan) {
+        if (plan == null) {
+            return Map.of();
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("repositoryPath", value(plan.getRepositoryPath(), ""));
+        result.put("changeRef", value(plan.getChangeRef(), ""));
+        result.put("changedFiles", list(plan.getChangedFiles()));
+        result.put("relatedTestFiles", list(plan.getRelatedTestFiles()));
+        result.put("recommendedTests", list(plan.getRecommendedTests()));
+        result.put("coverageGaps", list(plan.getCoverageGaps()));
+        result.put("mavenCommands", list(plan.getMavenCommands()));
+        result.put("verificationNotes", list(plan.getVerificationNotes()));
+        result.put("testExecutionResults", list(plan.getTestExecutionResults()));
+        return result;
     }
 
     private CodeOpsTestPatchAgentOutput mergedRepairTestPatch(Map<String, Object> patchGeneration) {
@@ -441,6 +461,20 @@ public class TestVerificationSkill implements EngineeringSkill {
             }
         }
         return false;
+    }
+
+    private boolean hasPassingTestResult(List<String> testExecutionResults) {
+        List<String> results = list(testExecutionResults);
+        if (results.isEmpty()) {
+            return false;
+        }
+        String text = String.join("\n", results).toLowerCase(Locale.ROOT);
+        if (text.contains("真实测试执行未开启") || hasFailedTestResult(results)) {
+            return false;
+        }
+        return text.contains("success=true")
+                || text.contains("build success")
+                || (text.contains("tests run:") && text.contains("failures: 0") && text.contains("errors: 0"));
     }
 
     private Map<String, String> snapshotFiles(String repositoryPath, List<String> files) {

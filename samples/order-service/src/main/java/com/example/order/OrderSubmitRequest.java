@@ -14,6 +14,9 @@ public class OrderSubmitRequest {
 
     private BigDecimal unitPrice;
 
+    public OrderSubmitRequest() {
+    }
+
     public OrderSubmitRequest(String userId, String skuId, Integer quantity, BigDecimal unitPrice) {
         this(userId, skuId, null, quantity, unitPrice);
     }
@@ -45,5 +48,24 @@ public class OrderSubmitRequest {
     public BigDecimal getUnitPrice() {
         return unitPrice;
     }
-}
 
+    public void setUserId(String userId) {
+        this.userId = userId;
+    }
+
+    public void setSkuId(String skuId) {
+        this.skuId = skuId;
+    }
+
+    public void setRequestId(String requestId) {
+        this.requestId = requestId;
+    }
+
+    public void setQuantity(Integer quantity) {
+        this.quantity = quantity;
+    }
+
+    public void setUnitPrice(BigDecimal unitPrice) {
+        this.unitPrice = unitPrice;
+    }
+}

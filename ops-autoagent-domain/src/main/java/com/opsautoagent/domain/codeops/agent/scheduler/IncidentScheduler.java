@@ -188,14 +188,21 @@ public class IncidentScheduler {
                 EngineeringTaskEntity task = EngineeringTaskEntity.builder()
                         .taskType("INCIDENT_TO_FIX")
                         .goal(qi.getService() + " " + qi.getAlertName() + " severity=" + qi.getSeverity()
-                                + ". Aggregated from " + qi.getAlertCount() + " alerts. " + qi.getSummary())
+                                + ". Aggregated from " + qi.getAlertCount() + " alerts. " + qi.getSummary()
+                                + endpointSuffix(qi.getEndpoints()))
                         .repository("samples/order-service")
                         .focusAreas(List.of("incident", "code_location", "bug_fix", "test_verification", "release_risk"))
                         .context(Map.of(
                                 "serviceName", qi.getService(),
                                 "severity", qi.getSeverity(),
                                 "alertCount", qi.getAlertCount(),
-                                "scheduledBy", "IncidentScheduler"
+                                "alertName", qi.getAlertName(),
+                                "affectedEndpoints", qi.getEndpoints() == null ? List.of() : qi.getEndpoints(),
+                                "scheduledBy", "IncidentScheduler",
+                                "evidenceMode", "LIVE",
+                                "fixtureFallbackAllowed", false,
+                                "allowPatchApply", true,
+                                "allowTestPatchApply", true
                         ))
                         .maxRounds(8)
                         .maxToolCalls(50)
@@ -209,6 +216,13 @@ public class IncidentScheduler {
                 onTaskComplete(qi.getService());
             }
         });
+    }
+
+    private String endpointSuffix(List<String> endpoints) {
+        if (endpoints == null || endpoints.isEmpty()) {
+            return "";
+        }
+        return " Affected endpoints: " + String.join(", ", endpoints);
     }
 
     /**

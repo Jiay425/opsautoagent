@@ -29,6 +29,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Matcher;
@@ -245,6 +246,15 @@ public class OpsDiagnosisEngineeringSkill implements EngineeringSkill {
                 summary(metricEvidence),
                 summary(logEvidence),
                 summary(traceEvidence),
+                logSamples(logEvidence),
+                rawLogData(logEvidence),
+                JSON.toJSONString(runbookMatches));
+        String codeHintEvidenceText = String.join("\n",
+                JSON.toJSONString(details),
+                task.getGoal(),
+                summary(metricEvidence),
+                summary(traceEvidence),
+                scopedLogEvidenceText(task, logEvidence),
                 JSON.toJSONString(runbookMatches));
         return OpsDiagnosisSkillResultEntity.builder()
                 .diagnosisId(command.getDiagnosisId())
@@ -254,12 +264,82 @@ public class OpsDiagnosisEngineeringSkill implements EngineeringSkill {
                 .traceId(command.getTraceId())
                 .status("LIVE_EVIDENCE_READY")
                 .reportSummary(abbreviate(evidenceText, 1200))
-                .codeHints(evidenceExtractor.extractCodeHints(evidenceText))
+                .codeHints(evidenceExtractor.extractCodeHints(codeHintEvidenceText))
                 .evidenceSources(liveEvidenceSources(metricEvidence, logEvidence, traceEvidence, runbookMatches))
                 .evidenceDetails(details)
                 .evidenceCoverage(liveEvidenceCoverage(metricEvidence, logEvidence, traceEvidence, runbookMatches))
                 .evidenceProvenance(liveEvidenceProvenance(metricEvidence, logEvidence, traceEvidence, runbookMatches))
                 .build();
+    }
+
+    private String scopedLogEvidenceText(EngineeringTaskEntity task, LogEvidenceEntity logEvidence) {
+        String logText = String.join("\n", summary(logEvidence), logSamples(logEvidence), rawLogData(logEvidence));
+        if (isBlank(logText)) {
+            return "";
+        }
+        List<String> endpoints = affectedEndpoints(task);
+        if (endpoints.isEmpty()) {
+            return logText;
+        }
+        String normalizedLogText = logText.toLowerCase(Locale.ROOT);
+        for (String endpoint : endpoints) {
+            String path = endpointPath(endpoint);
+            if (!isBlank(path) && normalizedLogText.contains(path.toLowerCase(Locale.ROOT))) {
+                return logText;
+            }
+        }
+        return "";
+    }
+
+    private List<String> affectedEndpoints(EngineeringTaskEntity task) {
+        if (task == null) {
+            return List.of();
+        }
+        if (task.getContext() != null) {
+            Object value = task.getContext().get("affectedEndpoints");
+            if (value instanceof List<?> list) {
+                List<String> endpoints = list.stream().map(String::valueOf).filter(v -> !isBlank(v)).toList();
+                if (!endpoints.isEmpty()) {
+                    return endpoints;
+                }
+            }
+            String single = stringValue(task.getContext().get("endpoint"));
+            if (!isBlank(single)) {
+                return List.of(single);
+            }
+        }
+        return affectedEndpointsFromGoal(task.getGoal());
+    }
+
+    private List<String> affectedEndpointsFromGoal(String goal) {
+        if (isBlank(goal)) {
+            return List.of();
+        }
+        String marker = "Affected endpoints:";
+        int index = goal.indexOf(marker);
+        if (index < 0) {
+            return List.of();
+        }
+        String raw = goal.substring(index + marker.length()).trim();
+        if (raw.isEmpty()) {
+            return List.of();
+        }
+        return java.util.Arrays.stream(raw.split(","))
+                .map(String::trim)
+                .filter(value -> !isBlank(value))
+                .toList();
+    }
+
+    private String endpointPath(String endpoint) {
+        if (isBlank(endpoint)) {
+            return "";
+        }
+        String value = endpoint.trim();
+        int space = value.indexOf(' ');
+        if (space >= 0 && space < value.length() - 1) {
+            value = value.substring(space + 1).trim();
+        }
+        return value;
     }
 
     private MetricEvidenceEntity safeQueryMetrics(IncidentCommandEntity command) {
@@ -492,6 +572,17 @@ public class OpsDiagnosisEngineeringSkill implements EngineeringSkill {
 
     private String summary(LogEvidenceEntity evidence) {
         return evidence == null ? "" : value(evidence.getSummary());
+    }
+
+    private String logSamples(LogEvidenceEntity evidence) {
+        if (evidence == null || evidence.getErrorSamples() == null || evidence.getErrorSamples().isEmpty()) {
+            return "";
+        }
+        return String.join("\n", evidence.getErrorSamples());
+    }
+
+    private String rawLogData(LogEvidenceEntity evidence) {
+        return evidence == null ? "" : value(evidence.getRawData());
     }
 
     private String summary(TraceEvidenceEntity evidence) {

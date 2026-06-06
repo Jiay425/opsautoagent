@@ -184,6 +184,10 @@ public class EngineeringTaskAgentService {
         return record;
     }
 
+    public HumanApprovalGate.ApprovalRecord approvalStatus(String taskId) {
+        return humanApprovalGate.getStatus(taskId);
+    }
+
     private void executeSkill(EngineeringTaskEntity task, int stepNo, IncidentFixOrchestratorDecision decision) {
         String skillId = decision.getSelectedSkill();
         Optional<EngineeringSkill> optionalSkill = skillRegistry.find(skillId);
@@ -1003,6 +1007,10 @@ public class EngineeringTaskAgentService {
     private Map<String, Object> buildGuardrailSummary(EngineeringTaskEntity task) {
         Map<String, Object> raw = collectLatestRawOutputs(task);
         Map<String, Object> evidenceCoverage = mapValue(raw.get("evidenceCoverage"));
+        if (!evidenceCoverage.containsKey("realEvidenceCoverage")) {
+            Map<String, Object> opsDiagnosis = mapValue(raw.get("opsDiagnosis"));
+            evidenceCoverage = mapValue(opsDiagnosis.get("evidenceCoverage"));
+        }
         Map<String, Object> patchQuality = mapValue(raw.get("patchQuality"));
         Map<String, Object> patchSandbox = mapValue(raw.get("patchSandbox"));
         Map<String, Object> summary = new LinkedHashMap<>();

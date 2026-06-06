@@ -32,6 +32,7 @@ public class IncidentEvidenceExtractor {
         if (isBlank(evidenceText)) {
             return List.of();
         }
+        evidenceText = normalizeEscapedEvidence(evidenceText);
         Set<String> hints = new LinkedHashSet<>();
         addStackFrameHints(hints, evidenceText);
         addExceptionHints(hints, evidenceText);
@@ -82,8 +83,8 @@ public class IncidentEvidenceExtractor {
         Matcher matcher = METHOD_OPERATION_PATTERN.matcher(text);
         while (matcher.find() && hints.size() < 80) {
             hints.add(matcher.group(1));
-            hints.add(matcher.group(2));
-            hints.add(matcher.group(1) + "." + matcher.group(2));
+            hints.add(matcher.group(3));
+            hints.add(matcher.group(1) + "." + matcher.group(3));
         }
     }
 
@@ -120,16 +121,30 @@ public class IncidentEvidenceExtractor {
         return hint;
     }
 
+    private String normalizeEscapedEvidence(String evidenceText) {
+        return evidenceText
+                .replace("\\r\\n", "\n")
+                .replace("\\n", "\n")
+                .replace("\\t", "\t")
+                .replace("\\\"", "\"");
+    }
+
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
     }
 
     private boolean isGenericJavaRole(String value) {
+        if (value == null) {
+            return true;
+        }
         return "Controller".equals(value)
                 || "Service".equals(value)
                 || "Repository".equals(value)
                 || "Mapper".equals(value)
                 || "Client".equals(value)
-                || "Gateway".equals(value);
+                || "Gateway".equals(value)
+                || value.startsWith("//")
+                || "/Exception".equals(value)
+                || "/graphql".equals(value);
     }
 }

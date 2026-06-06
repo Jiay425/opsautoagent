@@ -173,20 +173,55 @@ public class ToolRuntimeService {
         map.put("costMillis", record.getCostMillis());
         map.put("startTime", record.getStartTime() == null ? null : record.getStartTime().toString());
         map.put("endTime", record.getEndTime() == null ? null : record.getEndTime().toString());
-        map.put("metadata", record.getMetadata() == null ? Map.of() : record.getMetadata());
+        map.put("metadata", sanitizeMap(record.getMetadata()));
         return map;
     }
 
     private Map<String, Object> copy(Map<String, Object> metadata) {
-        return metadata == null ? new LinkedHashMap<>() : new LinkedHashMap<>(metadata);
+        return metadata == null ? new LinkedHashMap<>() : sanitizeMap(metadata);
     }
 
     private String safeSummary(String value) {
         if (value == null) {
             return "";
         }
-        String sanitized = value.replaceAll("(?i)(api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S+", "$1=***");
+        String sanitized = value
+                .replaceAll("(?i)(api[_-]?key|token|secret|password|authorization)\\s*[:=]\\s*\\S+", "$1=***")
+                .replaceAll("sk-[A-Za-z0-9_\\-]{12,}", "sk-***");
         return sanitized.length() <= 1200 ? sanitized : sanitized.substring(0, 1200) + "...truncated...";
+    }
+
+    private Map<String, Object> sanitizeMap(Map<String, Object> source) {
+        if (source == null || source.isEmpty()) {
+            return new LinkedHashMap<>();
+        }
+        Map<String, Object> sanitized = new LinkedHashMap<>();
+        source.forEach((key, value) -> sanitized.put(String.valueOf(key), sanitizeValue(String.valueOf(key), value)));
+        return sanitized;
+    }
+
+    private Object sanitizeValue(String key, Object value) {
+        if (value == null) {
+            return null;
+        }
+        String lowerKey = key == null ? "" : key.toLowerCase();
+        if (lowerKey.contains("key") || lowerKey.contains("token") || lowerKey.contains("secret")
+                || lowerKey.contains("password") || lowerKey.contains("authorization")) {
+            return "***";
+        }
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> nested = new LinkedHashMap<>();
+            map.forEach((nestedKey, nestedValue) -> nested.put(String.valueOf(nestedKey),
+                    sanitizeValue(String.valueOf(nestedKey), nestedValue)));
+            return nested;
+        }
+        if (value instanceof List<?> list) {
+            return list.stream().map(item -> sanitizeValue(key, item)).toList();
+        }
+        if (value instanceof String text) {
+            return safeSummary(text);
+        }
+        return value;
     }
 
     @lombok.Builder

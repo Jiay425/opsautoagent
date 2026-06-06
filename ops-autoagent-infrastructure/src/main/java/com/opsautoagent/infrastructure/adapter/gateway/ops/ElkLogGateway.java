@@ -135,7 +135,7 @@ public class ElkLogGateway extends AbstractOpsHttpGateway implements IOpsLogGate
                   "query": {
                     "bool": {
                       "filter": [
-                        {"range": {"@timestamp": {"gte": "%s", "lte": "%s", "format": "yyyy-MM-dd HH:mm:ss||yyyy-MM-dd HH:mm||strict_date_optional_time||epoch_millis"}}}
+                        {"range": {"@timestamp": {"gte": "%s", "lte": "%s", "time_zone": "+08:00", "format": "yyyy-MM-dd HH:mm:ss||yyyy-MM-dd HH:mm||strict_date_optional_time||epoch_millis"}}}
                       ],
                       "must": [
                         {
@@ -209,7 +209,7 @@ public class ElkLogGateway extends AbstractOpsHttpGateway implements IOpsLogGate
                 String traceId = firstNonBlank(source.getString("traceId"), source.getString("trace_id"));
                 String message = firstNonBlank(source.getString("message"), source.getString("exception"), source.getString("stack_trace"));
                 samples.add(abbreviate(String.format("[%s] [%s] traceId=%s %s",
-                        value(timestamp), value(level), value(traceId), value(message)), 800));
+                        value(timestamp), value(level), value(traceId), value(message)), 1600));
             }
         } catch (Exception e) {
             samples.add("ELK response parsed failed: " + e.getMessage());
