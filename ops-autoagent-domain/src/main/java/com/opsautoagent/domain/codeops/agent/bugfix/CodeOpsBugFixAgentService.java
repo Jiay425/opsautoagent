@@ -90,14 +90,15 @@ public class CodeOpsBugFixAgentService {
                     .rootCause("")
                     .confidence("LOW")
                     .targetFiles(List.of())
-                    .reasoning(List.of())
+                .reasoning(List.of())
                 .unifiedDiffPatch("")
                 .fileRewrites(List.of())
                 .testSuggestions(List.of())
                 .mavenCommands(List.of())
                 .testUnifiedDiffPatch("")
                 .testFileRewrites(List.of())
-                    .riskNotes(List.of())
+                .riskNotes(List.of())
+                    .scopeDecision(Map.of())
                     .rawContent(content == null ? "" : content)
                     .errorMessage(e.getMessage())
                     .modelRouting(Map.of(
@@ -143,6 +144,7 @@ public class CodeOpsBugFixAgentService {
                 .repairScope(input.getRepairScope())
                 .codeSearchMatches(input.getCodeSearchMatches())
                 .codeSnippets(limit(input.getCodeSnippets(), maxSnippets))
+                .codeContextPack(input.getCodeContextPack())
                 .knowledgeMatches(limit(input.getKnowledgeMatches(), maxKnowledge))
                 .reflectionFailures(input.getReflectionFailures() == null ? List.of() : input.getReflectionFailures())
                 .reflectionDiagnostics(input.getReflectionDiagnostics() == null ? List.of() : input.getReflectionDiagnostics())
@@ -169,6 +171,7 @@ public class CodeOpsBugFixAgentService {
                 .targetFiles(stringList(object.getJSONArray("targetFiles")))
                 .reasoning(stringList(object.getJSONArray("reasoning")))
                 .reflectionDiagnosis(mapObject(object.getJSONObject("reflectionDiagnosis")))
+                .scopeDecision(mapObject(object.getJSONObject("scopeDecision")))
                 .unifiedDiffPatch(object.getString("unifiedDiffPatch"))
                 .fileRewrites(fileRewrites(object.getJSONArray("fileRewrites")))
                 .testSuggestions(stringList(object.getJSONArray("testSuggestions")))
@@ -197,6 +200,7 @@ public class CodeOpsBugFixAgentService {
         object.put("testUnifiedDiffPatch", regexExtractMultiline(content, "testUnifiedDiffPatch"));
         // Object field
         object.put("reflectionDiagnosis", structuralExtractObject(content, "reflectionDiagnosis"));
+        object.put("scopeDecision", structuralExtractObject(content, "scopeDecision"));
         // Array of objects — the critical one: extract fileRewrites
         object.put("fileRewrites", structuralExtractFileRewrites(content, "fileRewrites"));
         object.put("testFileRewrites", structuralExtractFileRewrites(content, "testFileRewrites"));

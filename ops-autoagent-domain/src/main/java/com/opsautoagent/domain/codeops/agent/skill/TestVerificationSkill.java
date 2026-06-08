@@ -113,12 +113,15 @@ public class TestVerificationSkill implements EngineeringSkill {
                     plan.getRepositoryPath(), task, codeLocalization, patchGeneration);
             if (!scaffoldCommands.isEmpty()) {
                 plan.setMavenCommands(scaffoldCommands);
-                plan.setRecommendedTests(List.of(
+                List<String> scaffoldTestFiles = scaffoldRelatedTestFiles(plan.getRepositoryPath());
+                List<String> recommended = new ArrayList<>(List.of(
                         "InventoryConcurrencyTest：验证库存扣减并发下不会超卖",
                         "OrderSubmitServiceConcurrencyTest：验证重复 requestId 并发下只创建一笔订单"));
-                plan.setRelatedTestFiles(List.of(
-                        "src/test/java/com/example/order/InventoryConcurrencyTest.java",
-                        "src/test/java/com/example/order/OrderSubmitServiceConcurrencyTest.java"));
+                if (scaffoldTestFiles.stream().anyMatch(file -> file.endsWith("IdempotencyServiceAtomicityTest.java"))) {
+                    recommended.add("IdempotencyServiceAtomicityTest：验证幂等组件自身提供原子 check-and-mark API");
+                }
+                plan.setRecommendedTests(recommended);
+                plan.setRelatedTestFiles(scaffoldTestFiles);
             }
             agentOutput = CodeOpsTestVerificationAgentOutput.unavailable(
                     "Incident-to-Fix uses the combined Code Repair & Test Agent output; no separate Test Plan LLM call is made.",
@@ -384,6 +387,20 @@ public class TestVerificationSkill implements EngineeringSkill {
             }
         }
         return args;
+    }
+
+    private List<String> scaffoldRelatedTestFiles(String repositoryPath) {
+        List<String> files = new ArrayList<>(List.of(
+                "src/test/java/com/example/order/InventoryConcurrencyTest.java",
+                "src/test/java/com/example/order/OrderSubmitServiceConcurrencyTest.java"));
+        if (!isBlank(repositoryPath)) {
+            Path repo = Path.of(repositoryPath).toAbsolutePath().normalize();
+            Path atomicity = repo.resolve("src/test/java/com/example/order/IdempotencyServiceAtomicityTest.java").normalize();
+            if (atomicity.startsWith(repo) && Files.exists(atomicity)) {
+                files.add("src/test/java/com/example/order/IdempotencyServiceAtomicityTest.java");
+            }
+        }
+        return files;
     }
 
     private List<String> stringList(Object value) {

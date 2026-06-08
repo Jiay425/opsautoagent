@@ -139,6 +139,8 @@ public class PatchScopeGuardService {
             }
         }
 
+        violations.addAll(validateExpansionBoundary(repairScope, scopeTargetFiles, scopeTargetMethods));
+
         // Check changed methods are in scope
         if ("STRICT_SINGLE_METHOD".equals(scopeType)) {
             for (String method : changedMethods) {
@@ -185,8 +187,10 @@ public class PatchScopeGuardService {
         if (!violations.isEmpty()) {
             String failureType = violations.stream().anyMatch(v -> v.contains("TOUCHED_FILE_OUT_OF_SCOPE"))
                     ? "TOUCHED_FILE_OUT_OF_SCOPE"
+                    : (violations.stream().anyMatch(v -> v.contains("SCOPE_EXPANSION_OUT_OF_BOUND"))
+                        ? "SCOPE_EXPANSION_OUT_OF_BOUND"
                     : (violations.stream().anyMatch(v -> v.contains("HALLUCINATED_SCOPE"))
-                        ? "HALLUCINATED_SCOPE" : "METHOD_OUT_OF_SCOPE");
+                        ? "HALLUCINATED_SCOPE" : "METHOD_OUT_OF_SCOPE"));
             return PatchScopeGuardResult.failed(failureType,
                     new ArrayList<>(touchedFiles), changedMethods, violations, repairScope);
         }
@@ -353,6 +357,69 @@ public class PatchScopeGuardService {
 
     private boolean isStructuralChange(String method) {
         return method.endsWith(".<IMPORT_OR_FIELD>") || method.endsWith(".<CONSTRUCTOR>");
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> validateExpansionBoundary(Map<String, Object> repairScope,
+                                                   List<String> scopeTargetFiles,
+                                                   List<String> scopeTargetMethods) {
+        if (repairScope == null || repairScope.isEmpty()) {
+            return List.of();
+        }
+        Object decisionObj = repairScope.get("scopeDecision");
+        if (!(decisionObj instanceof Map<?, ?> decisionMap)) {
+            return List.of();
+        }
+        Object decisionValue = decisionMap.get("decision");
+        String decision = decisionValue == null ? "KEEP_SCOPE" : String.valueOf(decisionValue);
+        if (!"EXPAND_SCOPE".equals(decision)) {
+            return List.of();
+        }
+        Object candidateObj = repairScope.get("candidateScope");
+        if (!(candidateObj instanceof Map<?, ?> candidateScope)) {
+            return List.of("SCOPE_EXPANSION_OUT_OF_BOUND: EXPAND_SCOPE requested but repairScope.candidateScope is missing.");
+        }
+        Object expandableValue = candidateScope.get("expandable");
+        boolean expandable = expandableValue != null && Boolean.parseBoolean(String.valueOf(expandableValue));
+        if (!expandable) {
+            return List.of("SCOPE_EXPANSION_OUT_OF_BOUND: EXPAND_SCOPE requested but candidateScope.expandable=false.");
+        }
+
+        List<String> candidateFiles = candidateScope.get("targetFiles") instanceof List<?> fileList
+                ? fileList.stream().map(String::valueOf).map(this::normalizePath).toList() : List.of();
+        List<String> candidateMethods = candidateScope.get("targetMethods") instanceof List<?> methodList
+                ? methodList.stream().map(String::valueOf).toList() : List.of();
+        List<String> violations = new ArrayList<>();
+
+        if (!scopeTargetMethods.isEmpty() && candidateMethods.isEmpty()
+                && !"FULL_FILE".equals(String.valueOf(repairScope.getOrDefault("scopeType", "")))) {
+            violations.add("SCOPE_EXPANSION_OUT_OF_BOUND: EXPAND_SCOPE requested for method-level repair, "
+                    + "but candidateScope.targetMethods is empty.");
+        }
+
+        for (String file : scopeTargetFiles) {
+            String normalized = normalizePath(file);
+            boolean inCandidate = candidateFiles.isEmpty() || candidateFiles.stream()
+                    .anyMatch(candidate -> normalized.equals(candidate)
+                            || normalized.endsWith("/" + candidate)
+                            || candidate.endsWith("/" + normalized));
+            if (!inCandidate) {
+                violations.add("SCOPE_EXPANSION_OUT_OF_BOUND: final target file " + file
+                        + " is outside candidateScope.targetFiles " + candidateFiles);
+            }
+        }
+
+        for (String method : scopeTargetMethods) {
+            boolean inCandidate = candidateMethods.isEmpty() || candidateMethods.stream()
+                    .anyMatch(candidate -> method.equals(candidate)
+                            || method.endsWith("." + candidate)
+                            || candidate.endsWith("." + method));
+            if (!inCandidate) {
+                violations.add("SCOPE_EXPANSION_OUT_OF_BOUND: final target method " + method
+                        + " is outside candidateScope.targetMethods " + candidateMethods);
+            }
+        }
+        return violations;
     }
 
     // --- File extraction from patch text ---

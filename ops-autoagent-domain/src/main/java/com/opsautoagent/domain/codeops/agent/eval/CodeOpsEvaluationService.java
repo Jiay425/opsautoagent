@@ -60,6 +60,7 @@ public class CodeOpsEvaluationService {
 
         // Sandbox: restore sample repository to clean baseline before each case
         restoreSampleBaseline(evalCase.getRepository());
+        applyEvalCaseSourceSetup(evalCase);
 
         try {
             EngineeringTaskEntity task = engineeringTaskAgentService.submit(EngineeringTaskEntity.builder()
@@ -78,6 +79,8 @@ public class CodeOpsEvaluationService {
             long latencyMs = System.currentTimeMillis() - start;
             log.warn("CodeOps eval case failed. caseId={}", evalCase.getCaseId(), e);
             return score(batchId, runId, evalCase, null, latencyMs, e.getMessage());
+        } finally {
+            restoreSampleBaseline(evalCase.getRepository());
         }
     }
 
@@ -246,8 +249,9 @@ public class CodeOpsEvaluationService {
                 try (var paths = java.nio.file.Files.list(testDir)) {
                     paths.filter(f -> {
                         String name = f.getFileName().toString();
-                        return name.contains("Concurrency") || name.contains("ServiceTest")
-                                || name.endsWith("NpeTest.java") || name.endsWith("GuardTest.java");
+                        return name.endsWith("OrderSubmitServiceTest.java")
+                                || name.endsWith("NpeTest.java") || name.endsWith("GuardTest.java")
+                                || name.endsWith("AtomicityTest.java");
                     }).forEach(f -> {
                         try { java.nio.file.Files.deleteIfExists(f); } catch (Exception ignored) {}
                     });
@@ -256,6 +260,123 @@ public class CodeOpsEvaluationService {
         } catch (Exception e) {
             log.debug("Baseline restore skipped for {}: {}", repository, e.getMessage());
         }
+    }
+
+    private void applyEvalCaseSourceSetup(CodeOpsEvalCase evalCase) {
+        if (evalCase == null || evalCase.getCaseId() == null) {
+            return;
+        }
+        if (!"scope-expansion-cross-file-idempotency".equals(evalCase.getCaseId())) {
+            return;
+        }
+        try {
+            java.nio.file.Path repoPath = java.nio.file.Path.of(evalCase.getRepository()).toAbsolutePath().normalize();
+            writeCrossFileIdempotencyFault(repoPath);
+        } catch (Exception e) {
+            log.warn("Apply eval source setup failed. caseId={}", evalCase.getCaseId(), e);
+        }
+    }
+
+    private void writeCrossFileIdempotencyFault(java.nio.file.Path repoPath) throws java.io.IOException {
+        java.nio.file.Path serviceFile = repoPath.resolve("src/main/java/com/example/order/OrderSubmitService.java");
+        java.nio.file.Path idempotencyFile = repoPath.resolve("src/main/java/com/example/order/IdempotencyService.java");
+        java.nio.file.Path atomicityTestFile = repoPath.resolve("src/test/java/com/example/order/IdempotencyServiceAtomicityTest.java");
+        java.nio.file.Files.writeString(serviceFile, """
+                package com.example.order;
+                import java.math.BigDecimal;
+                public class OrderSubmitService {
+                    private final OrderRepository orderRepository;
+                    private final InventoryService inventoryService;
+                    private final IdempotencyService idempotencyService;
+                    public OrderSubmitService(OrderRepository orderRepository) { this(orderRepository, null, null); }
+                    public OrderSubmitService(OrderRepository orderRepository, InventoryService inventoryService, IdempotencyService idempotencyService) {
+                        this.orderRepository = orderRepository; this.inventoryService = inventoryService; this.idempotencyService = idempotencyService;
+                    }
+                    public OrderSubmitResponse submit(OrderSubmitRequest request) {
+                        if (request.getUnitPrice() == null || request.getQuantity() == null) throw new IllegalArgumentException("Unit price and quantity must not be null");
+                        BigDecimal totalAmount = request.getUnitPrice().multiply(BigDecimal.valueOf(request.getQuantity()));
+                        String orderId = orderRepository.create(request.getUserId(), request.getSkuId(), request.getQuantity(), totalAmount);
+                        return new OrderSubmitResponse(orderId, totalAmount);
+                    }
+                    public OrderSubmitResponse submitFlashSale(OrderSubmitRequest request) {
+                        if (request.getRequestId() == null || request.getRequestId().isBlank()) throw new IllegalArgumentException("requestId must not be blank");
+                        if (request.getUserId() == null || request.getSkuId() == null) throw new IllegalArgumentException("userId and skuId must not be null");
+                        if (request.getUnitPrice() == null || request.getQuantity() == null) throw new IllegalArgumentException("Unit price and quantity must not be null");
+                        if (idempotencyService == null) throw new IllegalStateException("IdempotencyService not configured");
+                        if (inventoryService == null) throw new IllegalStateException("InventoryService not configured");
+                        if (idempotencyService.alreadyProcessed(request.getRequestId())) {
+                            throw new IllegalStateException("Duplicate requestId " + request.getRequestId());
+                        }
+                        inventoryService.reserve(request.getSkuId(), request.getQuantity());
+                        idempotencyService.markProcessed(request.getRequestId());
+                        BigDecimal totalAmount = request.getUnitPrice().multiply(BigDecimal.valueOf(request.getQuantity()));
+                        try { String orderId = orderRepository.create(request.getUserId(), request.getSkuId(), request.getQuantity(), totalAmount); return new OrderSubmitResponse(orderId, totalAmount); }
+                        catch (RuntimeException e) { inventoryService.release(request.getSkuId(), request.getQuantity()); throw e; }
+                    }
+                }
+                """);
+        java.nio.file.Files.writeString(idempotencyFile, """
+                package com.example.order;
+                import java.util.HashSet;
+                import java.util.Set;
+                public class IdempotencyService {
+                    private final Set<String> processedRequestIds = new HashSet<>();
+                    public boolean alreadyProcessed(String requestId) { return processedRequestIds.contains(requestId); }
+                    public void markProcessed(String requestId) { processedRequestIds.add(requestId); }
+                }
+                """);
+        java.nio.file.Files.createDirectories(atomicityTestFile.getParent());
+        java.nio.file.Files.writeString(atomicityTestFile, """
+                package com.example.order;
+
+                import org.junit.jupiter.api.RepeatedTest;
+
+                import java.util.concurrent.CountDownLatch;
+                import java.util.concurrent.ExecutorService;
+                import java.util.concurrent.Executors;
+                import java.util.concurrent.TimeUnit;
+                import java.util.concurrent.atomic.AtomicInteger;
+
+                import static org.junit.jupiter.api.Assertions.assertEquals;
+                import static org.junit.jupiter.api.Assertions.assertTrue;
+
+                class IdempotencyServiceAtomicityTest {
+
+                    @RepeatedTest(5)
+                    void tryMarkProcessedShouldAllowOnlyOneWinnerForSameRequestId() throws Exception {
+                        IdempotencyService service = new IdempotencyService();
+                        int threads = 16;
+                        CountDownLatch ready = new CountDownLatch(threads);
+                        CountDownLatch start = new CountDownLatch(1);
+                        CountDownLatch done = new CountDownLatch(threads);
+                        AtomicInteger winners = new AtomicInteger();
+                        ExecutorService executor = Executors.newFixedThreadPool(threads);
+
+                        for (int i = 0; i < threads; i++) {
+                            executor.submit(() -> {
+                                ready.countDown();
+                                try {
+                                    start.await();
+                                    if (service.tryMarkProcessed("req-cross-file-atomic")) {
+                                        winners.incrementAndGet();
+                                    }
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                } finally {
+                                    done.countDown();
+                                }
+                            });
+                        }
+
+                        assertTrue(ready.await(5, TimeUnit.SECONDS));
+                        start.countDown();
+                        assertTrue(done.await(10, TimeUnit.SECONDS));
+                        executor.shutdownNow();
+
+                        assertEquals(1, winners.get());
+                    }
+                }
+                """);
     }
 
     public CodeOpsEvalReport getLastReport() {
@@ -291,6 +412,14 @@ public class CodeOpsEvaluationService {
                         com.alibaba.fastjson.JSON.toJSONString(c));
                 java.nio.file.Files.writeString(casesDir.resolve(c.getCaseId() + ".md"),
                         markdownGenerator.generateCaseReport(c));
+                if (c.getTracePayload() != null && !c.getTracePayload().isEmpty()) {
+                    java.nio.file.Files.writeString(casesDir.resolve(c.getCaseId() + "-trace.json"),
+                            com.alibaba.fastjson.JSON.toJSONString(c.getTracePayload()));
+                }
+                if (c.getPatchDiff() != null && !c.getPatchDiff().isBlank()) {
+                    java.nio.file.Files.writeString(casesDir.resolve(c.getCaseId() + ".diff"),
+                            c.getPatchDiff());
+                }
             }
         } catch (java.io.IOException e) {
             log.warn("Failed to persist eval report: {}", e.getMessage());
@@ -561,6 +690,33 @@ public class CodeOpsEvaluationService {
                         .expectedPatchKeywords(List.of("synchronized", "ConcurrentHashMap", "requestId", "stock"))
                         .expectedTestNames(List.of("InventoryConcurrencyTest", "OrderSubmitServiceConcurrencyTest"))
                         .expectedRiskKeywords(List.of("库存", "并发", "锁", "回滚", "观察"))
+                        .build()
+                ,
+                CodeOpsEvalCase.builder()
+                        .caseId("scope-expansion-cross-file-idempotency")
+                        .caseName("跨文件范围扩展 — 栈顶在下单方法，根因在幂等组件")
+                        .taskType("INCIDENT_TO_FIX")
+                        .goal("order-service 秒杀下单接口 POST /api/orders/submit 出现重复 requestId 被成功处理两次，5xx 和订单冲突升高。线上日志和 Trace 首先指向 OrderSubmitService.submitFlashSale，请结合证据和代码关系判断是否需要跨文件修复。")
+                        .repository("samples/order-service")
+                        .focusAreas(List.of("incident", "idempotency", "cross_file_scope_expansion", "bug_fix", "test_verification", "release_risk"))
+                        .context(Map.of(
+                                "serviceName", "order-service",
+                                "endpoint", "POST /api/orders/submit",
+                                "fixtureCase", "fixtures/incident/cross-file-idempotency-race/eval-case.json",
+                                "allowPatchApply", true,
+                                "allowTestPatchApply", true
+                        ))
+                        .expectedSkills(List.of("ops_diagnosis", "repo_understanding", "engineering_knowledge_rag", "bug_fix", "test_verification", "release_risk_analysis"))
+                        .expectedEvidenceKeywords(List.of("duplicate", "requestId", "OrderSubmitService", "submitFlashSale", "idempotency", "race"))
+                        .expectedArtifacts(List.of("patchDraft", "mavenCommands", "riskPoints"))
+                        .expectedTargetFiles(List.of(
+                                "src/main/java/com/example/order/OrderSubmitService.java",
+                                "src/main/java/com/example/order/IdempotencyService.java"
+                        ))
+                        .expectedTargetMethods(List.of("submitFlashSale", "alreadyProcessed", "markProcessed", "tryMarkProcessed"))
+                        .expectedPatchKeywords(List.of("tryMarkProcessed", "synchronized", "requestId", "Duplicate requestId"))
+                        .expectedTestNames(List.of("OrderSubmitServiceConcurrencyTest", "IdempotencyServiceAtomicityTest"))
+                        .expectedRiskKeywords(List.of("重复", "幂等", "5xx", "回滚", "观察"))
                         .build()
         );
     }

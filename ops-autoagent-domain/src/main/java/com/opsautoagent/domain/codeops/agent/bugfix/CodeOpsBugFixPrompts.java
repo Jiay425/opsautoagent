@@ -73,25 +73,46 @@ public final class CodeOpsBugFixPrompts {
 
                 Important rules:
                 - Output only JSON.
-                - Ground every claim in the provided opsDiagnosis, codeSearchMatches, codeSnippets, or knowledgeMatches.
+                - Ground every claim in the provided opsDiagnosis, codeContextPack, codeSearchMatches, codeSnippets, or knowledgeMatches.
+                - Prefer codeContextPack over raw search hits. codeContextPack is the curated repository context:
+                  primaryFiles are the first repair suspects, candidateFiles are legal expansion files, supportFiles/tests/buildFiles explain dependencies.
+                  contextReasons explains why each file was included.
+                - If codeContextPack shows a state-owning component, repository, cache, lock, idempotency service, or related test,
+                  reason over that component before choosing a caller-only patch.
                 - If memoryHints is not empty, treat them as REFERENCE ONLY — they describe what worked for similar past incidents.
                   Use them only if they are consistent with current evidence, repairScope and visible code.
                   Never override current incident evidence with memory.
                   Memory hints are suggestions, not facts.
                 - Do not invent files, methods, fields, dependencies, APIs, metrics, logs, or line numbers not present in the input.
-                - CRITICAL — READ repairScope IN THE INPUT BELOW: It tells you exactly which methods to fix and how. Follow the scopeType rules strictly.
-                  * STRICT_SINGLE_METHOD: Fix ONLY the listed targetMethods. All other methods in the same file MUST be preserved byte-for-byte from codeSnippets. Do NOT fix null-check gaps, race conditions, or code smells in non-target methods — the patch will be rejected.
-                  * MULTI_METHOD: The incident spans multiple methods. Fix the listed targetMethods and any necessary signature/import adjustments. Other methods in the same file must remain untouched unless a dependency signature requires a tiny matching update.
-                  * FULL_FILE: The incident may require broader changes. Still prefer minimal changes and preserve existing behavior for normal requests.
+                - CRITICAL — repairScope has TWO stages:
+                  * initialScope is the Code Localization Agent's best first suspect. It is a recommendation, not a final lock.
+                  * candidateScope is the maximum safe boundary derived from evidence and repository search. You may not go outside it.
+                  * Your response MUST include scopeDecision. Choose KEEP_SCOPE when initialScope is enough. Choose EXPAND_SCOPE only when
+                    the visible code proves that fixing the primary method alone cannot satisfy the incident requirement.
+                  * If you choose EXPAND_SCOPE, finalTargetMethods/finalTargetFiles must be a subset of candidateScope. Explain why each added
+                    method is required by current evidence or direct code coupling.
+                  * If the fix must add a new method, change several helper methods in the same candidate file, or replace a check-then-act API
+                    with an atomic API, use finalScopeType=FULL_FILE with finalTargetFiles limited to candidateScope.targetFiles and leave
+                    finalTargetMethods empty. This is allowed only inside candidateScope files.
+                - Scope execution rules after your scopeDecision:
+                  * STRICT_SINGLE_METHOD: Fix ONLY finalTargetMethods. All other methods in the same file MUST be preserved byte-for-byte from codeContextPack/codeSnippets.
+                  * MULTI_METHOD: Fix only finalTargetMethods and necessary signature/import adjustments. Other methods must remain untouched.
+                  * FULL_FILE: The incident may require broader changes inside finalTargetFiles. Still prefer minimal changes and preserve normal behavior.
                   * NO_CODE_FIX: This is NOT a code repair incident. Do NOT generate any patch or file rewrite. Output empty unifiedDiffPatch, empty fileRewrites, empty testFileRewrites.
-                - For fileRewrites, the newContent MUST contain the COMPLETE file including all unchanged methods. Copy non-target methods VERBATIM from codeSnippets.
-                - Before outputting, self-check: (1) What scopeType is in repairScope? (2) Did I follow its rules exactly? (3) Are non-target methods identical to codeSnippets? Redo if any answer is wrong.
+                - For fileRewrites, the newContent MUST contain the COMPLETE file including all unchanged methods. Copy non-target methods VERBATIM from codeContextPack/codeSnippets.
+                - Before outputting, self-check: (1) Did I choose KEEP_SCOPE or EXPAND_SCOPE? (2) Are final targets inside candidateScope?
+                  (3) Did I preserve non-target methods exactly? Redo if any answer is wrong.
                 - For INCIDENT_TO_FIX tasks with CODE_FIX strategy, put the complete rewritten production file content in fileRewrites.
                 - This combined Code Repair & Test Agent owns both production fix and test proposal for INCIDENT_TO_FIX.
                 - If writing an exact unified diff is difficult, put the complete rewritten file content in fileRewrites instead.
                 - If the provided snippets are insufficient to create either a safe patch or a full file rewrite, output an empty unifiedDiffPatch and an empty fileRewrites array.
                 - Prefer a minimal patch over broad refactoring.
                 - Preserve existing behavior for normal requests.
+                - For cross-file check-then-act races, fix the component that owns the mutable state. Do NOT only add a synchronized block
+                  around the caller when a candidate service/repository owns the set, map, stock, cache, or idempotency state.
+                  Example: if OrderSubmitService calls IdempotencyService.alreadyProcessed() and IdempotencyService.markProcessed()
+                  separately, the robust fix is to add/use an atomic method in IdempotencyService and call it from OrderSubmitService.
+                  This requires EXPAND_SCOPE and usually finalScopeType=FULL_FILE over both candidate files.
                 - Do not propose direct production deployment. The patch is a draft for human review.
                 - The patch must be a valid unified diff that can be applied by `git apply`.
                 - Use standard headers exactly like `--- a/path` and `+++ b/path`, followed by a real `@@ -old,count +new,count @@` hunk header.
@@ -131,17 +152,22 @@ public final class CodeOpsBugFixPrompts {
                   * Step 4: Read nextAttemptConstraints — these are non-negotiable constraints.
                   * The new patch MUST directly address the failureType.
                 - FailureType-specific guidance:
-                  * SCOPE_GUARD_FAILED: Do NOT modify any method outside repairScope.targetMethods. Only fix methods listed in repairScope.
+                  * SCOPE_GUARD_FAILED: Read the guard violation. If you need to add a new method or update multiple helper methods inside
+                    candidateScope.targetFiles, output EXPAND_SCOPE with finalScopeType=FULL_FILE, finalTargetFiles limited to candidateScope,
+                    and finalTargetMethods empty. If it is outside candidateScope, do not touch it.
                   * PATCH_APPLY_FAILED: Use fileRewrites with COMPLETE file content instead of unifiedDiffPatch. Leave unifiedDiffPatch empty.
                   * COMPILE_FAILED: Fix the exact compiler error BEFORE changing any logic. Read failedCommands and failedFiles for clues.
                   * SOURCE_STRUCTURE_INVALID: Fix unbalanced braces or malformed Java syntax. Check sourceValidation.errors.
-                  * TEST_COMPILE_FAILED: Fix generated test compilation errors or remove invalid test patches. Check testFileRewrites.
+                  * TEST_COMPILE_FAILED: First decide whether the failing test expresses the incident requirement. If the test requires a missing
+                    production API such as IdempotencyService.tryMarkProcessed(String), implement the production API and update callers.
+                    Do NOT remove or weaken a valid incident regression test.
                   * TEST_ASSERTION_FAILED: If the test reflects the incident requirement, adjust production code. Otherwise adjust the test.
                   * TEST_PATCH_APPLY_FAILED: Ensure test files exist in correct src/test directories with valid package/imports.
                   * TEST_TIMEOUT: Ensure tests have bounded execution time. Do not use unbounded waits.
                 - In reflection rounds, prefer complete fileRewrites over handwritten unifiedDiffPatch for production Java files.
                   Keep unifiedDiffPatch empty when fileRewrites is present.
-                - In reflection rounds, do NOT broaden the fix. Change ONLY the files listed in reflectionDiagnostics.failedFiles or repairScope.targetFiles.
+                - In reflection rounds, broaden the fix only through scopeDecision=EXPAND_SCOPE and only inside repairScope.candidateScope.
+                  Otherwise change ONLY the files listed in reflectionDiagnostics.failedFiles or the final repair scope.
                 - The new patch must be DIFFERENT from the previous failed attempt. Do not resubmit the same patch.
 
                 Return JSON matching this schema:
@@ -155,6 +181,15 @@ public final class CodeOpsBugFixPrompts {
                     "failedFiles": ["string"],
                     "mustFix": ["string"],
                     "mustAvoid": ["string"]
+                  },
+                  "scopeDecision": {
+                    "decision": "KEEP_SCOPE|EXPAND_SCOPE",
+                    "finalScopeType": "STRICT_SINGLE_METHOD|MULTI_METHOD|FULL_FILE|NO_CODE_FIX",
+                    "finalTargetFiles": ["string"],
+                    "finalTargetMethods": ["ClassName.methodName"],
+                    "whyKeepOrExpand": ["string"],
+                    "expectedBehaviorChange": "string",
+                    "risk": "LOW|MEDIUM|HIGH"
                   },
                   "unifiedDiffPatch": "string",
                   "fileRewrites": [{"filePath": "string", "newContent": "complete file content", "reasoning": "string"}],

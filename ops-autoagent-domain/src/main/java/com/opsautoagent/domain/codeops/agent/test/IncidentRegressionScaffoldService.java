@@ -63,8 +63,18 @@ public class IncidentRegressionScaffoldService {
         }
         return List.of(
                 "mvn -q -DskipTests compile",
-                "mvn -q -Dtest=InventoryConcurrencyTest,OrderSubmitServiceConcurrencyTest test",
+                "mvn -q -Dtest=" + String.join(",", regressionTestClasses(repo)) + " test",
                 "mvn -q test");
+    }
+
+    private List<String> regressionTestClasses(Path repo) {
+        List<String> tests = new java.util.ArrayList<>(List.of(
+                "InventoryConcurrencyTest",
+                "OrderSubmitServiceConcurrencyTest"));
+        if (repo != null && Files.exists(repo.resolve("src/test/java/com/example/order/IdempotencyServiceAtomicityTest.java"))) {
+            tests.add("IdempotencyServiceAtomicityTest");
+        }
+        return tests;
     }
 
     private boolean looksLikeOrderConcurrencyIncident(Path repo,

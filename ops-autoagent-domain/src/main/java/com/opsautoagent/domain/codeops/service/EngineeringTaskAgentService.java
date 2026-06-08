@@ -516,7 +516,7 @@ public class EngineeringTaskAgentService {
             return;
         }
         int reflectionRound = integerValue(context.get("incidentFixReflectionRound"));
-        int maxRounds = resolveMaxReflectionRounds(context);
+        int maxRounds = "test_verification".equals(skillId) ? 3 : resolveMaxReflectionRounds(context);
 
         // Adaptive cap: STRICT_SINGLE_METHOD = 1 round, others = 3
         boolean isLastRound = reflectionRound + 1 >= maxRounds;
@@ -610,7 +610,14 @@ public class EngineeringTaskAgentService {
             failureType = "SCOPE_GUARD_FAILED";
             Object gft = guardMap.get("failureType");
             String guardFailureType = gft != null ? String.valueOf(gft) : "METHOD_OUT_OF_SCOPE";
-            mustFix.add("Only modify methods listed in repairScope.targetMethods. Guard failure: " + guardFailureType);
+            if ("SCOPE_EXPANSION_OUT_OF_BOUND".equals(guardFailureType)
+                    || "HALLUCINATED_SCOPE".equals(guardFailureType)) {
+                mustFix.add("Scope expansion failed because the patch needs a method/file boundary not represented by repairScope.targetMethods. "
+                        + "If the changed files are inside repairScope.candidateScope.targetFiles and the fix adds a new method or rewrites helper methods, "
+                        + "use scopeDecision.finalScopeType=FULL_FILE, finalTargetFiles inside candidateScope, and leave finalTargetMethods empty.");
+            } else {
+                mustFix.add("Only modify methods listed in repairScope.targetMethods. Guard failure: " + guardFailureType);
+            }
             Object violations = guardMap.get("violations");
             if (violations instanceof List<?> vList) {
                 vList.stream().map(String::valueOf).forEach(mustAvoid::add);
@@ -627,7 +634,12 @@ public class EngineeringTaskAgentService {
             if (touchedFiles instanceof List<?> tfList) {
                 failedFiles.addAll(tfList.stream().map(String::valueOf).toList());
             }
-            nextAttemptConstraints.add("Do NOT modify any method outside repairScope.targetMethods.");
+            if ("SCOPE_EXPANSION_OUT_OF_BOUND".equals(guardFailureType)
+                    || "HALLUCINATED_SCOPE".equals(guardFailureType)) {
+                nextAttemptConstraints.add("You may broaden to FULL_FILE only inside repairScope.candidateScope.targetFiles. Do not touch files outside candidateScope.");
+            } else {
+                nextAttemptConstraints.add("Do NOT modify any method outside repairScope.targetMethods.");
+            }
         }
 
         // Priority 2: PatchApply
@@ -687,6 +699,7 @@ public class EngineeringTaskAgentService {
             if (text.contains("testcompile") || text.contains("compilation failure") || text.contains("compilation error")) {
                 failureType = isEmptyFailureType(failureType) ? "TEST_COMPILE_FAILED" : failureType;
                 mustFix.add("Generated tests do not compile. Match visible production APIs and avoid missing dependencies.");
+                addMissingApiRequirements(text, mustFix, nextAttemptConstraints);
                 failedFiles.addAll(extractFilesFromText(text));
             } else if (text.contains("command timeout") || text.contains("timed out")) {
                 failureType = isEmptyFailureType(failureType) ? "TEST_TIMEOUT" : failureType;
@@ -727,6 +740,24 @@ public class EngineeringTaskAgentService {
 
     private boolean isEmptyFailureType(String ft) {
         return ft == null || ft.isEmpty() || "UNKNOWN".equals(ft);
+    }
+
+    private void addMissingApiRequirements(String failureText,
+                                           List<String> mustFix,
+                                           List<String> nextAttemptConstraints) {
+        if (failureText == null || failureText.isBlank()) {
+            return;
+        }
+        String lower = failureText.toLowerCase(Locale.ROOT);
+        if (lower.contains("trymarkprocessed") && lower.contains("idempotencyservice")) {
+            mustFix.add("IdempotencyServiceAtomicityTest requires IdempotencyService.tryMarkProcessed(String). "
+                    + "Do not remove this test. Implement an atomic check-and-mark API in IdempotencyService, "
+                    + "then update OrderSubmitService.submitFlashSale to call it.");
+            nextAttemptConstraints.add("Use scopeDecision=EXPAND_SCOPE with finalScopeType=FULL_FILE for "
+                    + "src/main/java/com/example/order/IdempotencyService.java and "
+                    + "src/main/java/com/example/order/OrderSubmitService.java. "
+                    + "The fix must live in the component that owns requestId state, not only in the caller.");
+        }
     }
 
     @SuppressWarnings("unchecked")

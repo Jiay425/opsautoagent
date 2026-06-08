@@ -1,6 +1,7 @@
 package com.opsautoagent.domain.codeops.agent.bugfix;
 
 import com.opsautoagent.domain.codeops.model.entity.CodeSnippetEntity;
+import com.opsautoagent.domain.codeops.model.entity.CodeContextPackEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringKnowledgeMatchEntity;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -35,6 +36,8 @@ public class CodeOpsBugFixAgentInput {
     private List<String> codeSearchMatches;
 
     private List<CodeSnippetEntity> codeSnippets;
+
+    private CodeContextPackEntity codeContextPack;
 
     private List<EngineeringKnowledgeMatchEntity> knowledgeMatches;
 

@@ -122,6 +122,13 @@ public class RepoUnderstandingSkill implements EngineeringSkill {
         output.put("shouldEnterCodeRepair", localization.isShouldEnterCodeRepair());
         output.put("targetFiles", localization.getTargetFiles() == null ? List.of() : localization.getTargetFiles());
         output.put("targetMethods", localization.getTargetMethods() == null ? List.of() : localization.getTargetMethods());
+        output.put("primarySuspectMethod", value(localization.getPrimarySuspectMethod(), ""));
+        output.put("candidateFiles", localization.getCandidateFiles() == null ? List.of() : localization.getCandidateFiles());
+        output.put("candidateMethods", localization.getCandidateMethods() == null ? List.of() : localization.getCandidateMethods());
+        output.put("scopeSuggestion", value(localization.getScopeSuggestion(), ""));
+        output.put("scopeConfidence", value(localization.getScopeConfidence(), value(localization.getConfidence(), "LOW")));
+        output.put("expandable", localization.isExpandable());
+        output.put("expansionBoundary", localization.getExpansionBoundary() == null ? List.of() : localization.getExpansionBoundary());
         output.put("suspiciousLocations", localization.getSuspiciousLocations() == null ? List.of() : localization.getSuspiciousLocations());
         output.put("localizationReasoning", localization.getReasoning() == null ? List.of() : localization.getReasoning());
         output.put("missingEvidence", localization.getMissingEvidence() == null ? List.of() : localization.getMissingEvidence());

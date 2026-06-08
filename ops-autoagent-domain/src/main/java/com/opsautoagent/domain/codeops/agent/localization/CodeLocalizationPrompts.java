@@ -20,11 +20,21 @@ public final class CodeLocalizationPrompts {
                 - Search results are candidates, not conclusions. Rank them by how well they explain the incident.
                 - Do not send pure runtime/config/capacity incidents into code repair unless evidence points to source code.
                 - Use strategyType CODE_FIX only when exceptions, stack frames, source symbols, leaks, slow SQL, or code snippets explain the incident.
+                - Use strategyType CODE_FIX for duplicate requestId accepted successfully, idempotency race, check-then-act race,
+                  non-atomic state mutation, duplicate order creation, negative stock caused by concurrency, or data consistency bugs.
                 - Use CONFIG_FIX for Hikari/connection pool/timeouts/config tuning without code evidence.
                 - Use RUNTIME_ACTION for JVM GC, OOM, CPU, heap, thread dump, or runtime resource symptoms without code evidence.
                 - Use CAPACITY_FIX for traffic saturation, queue pressure, instance capacity, or scaling symptoms.
                 - Use NEED_MORE_EVIDENCE when evidence is not enough.
                 - Prefer precise file and method localization over broad module guesses.
+                - Do not lock the final repair boundary. This agent only proposes an initial suspect and a safe candidate boundary.
+                - Put the most likely method in primarySuspectMethod. Put every evidence-related method that may need a coordinated fix
+                  in candidateMethods, even if only one method is currently the primary suspect.
+                - scopeSuggestion is your initial estimate, not a hard lock. Use STRICT_SINGLE_METHOD only when the incident clearly
+                  affects one method. Use MULTI_METHOD when callers, validators, repository calls, idempotency, locking, or shared helpers
+                  may need to change together. Use FULL_FILE only when method-level localization is not reliable.
+                - expandable=true means the Code Repair Agent may broaden from the primary suspect to candidateMethods if visible code
+                  proves the one-method fix is insufficient. expansionBoundary must list the files/methods that are allowed for such broadening.
                 - If the evidence is insufficient, keep confidence LOW and list missingEvidence.
                 - Do not generate a patch. This agent only localizes code.
 
@@ -35,6 +45,13 @@ public final class CodeLocalizationPrompts {
                   "shouldEnterCodeRepair": true,
                   "targetFiles": ["string"],
                   "targetMethods": ["string"],
+                  "primarySuspectMethod": "ClassName.methodName",
+                  "candidateFiles": ["string"],
+                  "candidateMethods": ["ClassName.methodName"],
+                  "scopeSuggestion": "STRICT_SINGLE_METHOD|MULTI_METHOD|FULL_FILE|NO_CODE_FIX",
+                  "scopeConfidence": "LOW|MEDIUM|HIGH",
+                  "expandable": true,
+                  "expansionBoundary": ["file-or-method string"],
                   "suspiciousLocations": ["string"],
                   "relatedTests": ["string"],
                   "reasoning": ["string"],

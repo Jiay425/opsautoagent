@@ -30,6 +30,8 @@ public class CodeOpsBugFixAgentOutput {
 
     private Map<String, Object> reflectionDiagnosis;
 
+    private Map<String, Object> scopeDecision;
+
     private String unifiedDiffPatch;
 
     private List<FileRewritePatchEntity> fileRewrites;
@@ -63,6 +65,7 @@ public class CodeOpsBugFixAgentOutput {
                 .targetFiles(List.of())
                 .reasoning(List.of())
                 .reflectionDiagnosis(Map.of())
+                .scopeDecision(Map.of())
                 .unifiedDiffPatch("")
                 .fileRewrites(List.of())
                 .testSuggestions(List.of())

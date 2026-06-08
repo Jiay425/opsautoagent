@@ -20,6 +20,7 @@ import com.opsautoagent.domain.codeops.agent.patch.PatchValidationService;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringKnowledgeMatchEntity;
 import com.opsautoagent.domain.codeops.agent.tool.EngineeringToolGateway;
 import com.opsautoagent.domain.codeops.model.entity.BugFixSuggestionEntity;
+import com.opsautoagent.domain.codeops.model.entity.CodeContextPackEntity;
 import com.opsautoagent.domain.codeops.model.entity.CodeSnippetEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringSkillEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringSkillResultEntity;
@@ -110,7 +111,8 @@ public class BugFixSkill implements EngineeringSkill {
         diagnosisClues = appendReflectionDiagnosticClues(diagnosisClues, reflectionDiagnostics);
         suspiciousLocations = appendReflectionDiagnosticLocations(suspiciousLocations, reflectionDiagnostics);
         List<String> ruleSuggestions = buildFixSuggestions(task, diffContext);
-        List<CodeSnippetEntity> codeSnippets = loadCodeSnippets(task);
+        CodeContextPackEntity codeContextPack = buildCodeContextPack(task);
+        List<CodeSnippetEntity> codeSnippets = codeContextPack.getSnippets() == null ? List.of() : codeContextPack.getSnippets();
         Map<String, Object> repairScope = buildRepairScope(task, suspiciousLocations, diagnosisClues);
 
         if ("NO_CODE_FIX".equals(repairScope.get("scopeType"))) {
@@ -156,6 +158,7 @@ public class BugFixSkill implements EngineeringSkill {
                 .memoryHints(memoryHints)
                 .codeSearchMatches(extractCodeSearchMatches(task))
                 .codeSnippets(codeSnippets)
+                .codeContextPack(codeContextPack)
                 .knowledgeMatches(extractKnowledgeMatches(task))
                 .reflectionFailures(extractReflectionFailures(task))
                 .reflectionDiagnostics(reflectionDiagnostics)
@@ -165,6 +168,7 @@ public class BugFixSkill implements EngineeringSkill {
         String llmPatch = !isBlank(rewritePatch) ? rewritePatch : value(llmFix.getUnifiedDiffPatch(), "");
         boolean llmPatchAvailable = llmFix.isSuccess() && !isBlank(llmPatch);
         boolean incidentToFix = "INCIDENT_TO_FIX".equals(task.getTaskType());
+        Map<String, Object> effectiveRepairScope = resolveEffectiveRepairScope(repairScope, llmFix.getScopeDecision());
         BugFixSuggestionEntity suggestion = BugFixSuggestionEntity.builder()
                 .repositoryPath(value(diffContext.getRepositoryPath(), ""))
                 .changeRef(value(diffContext.getChangeRef(), "working_tree"))
@@ -185,7 +189,7 @@ public class BugFixSkill implements EngineeringSkill {
                 suggestion.getRepositoryPath(),
                 suggestion.getPatchDraft(),
                 llmFix.getFileRewrites(),
-                repairScope);
+                effectiveRepairScope);
         if (!scopeGuard.isPassed()) {
             return EngineeringSkillResultEntity.builder()
                     .skillId(SKILL_ID)
@@ -194,14 +198,15 @@ public class BugFixSkill implements EngineeringSkill {
                             + "，violations=" + scopeGuard.getViolations())
                     .evidence(List.of(
                             "修复范围：" + repairScope.get("scopeType"),
-                            "允许的方法：" + repairScope.get("targetMethods"),
+                            "初始允许的方法：" + repairScope.get("targetMethods"),
+                            "最终允许的方法：" + effectiveRepairScope.get("targetMethods"),
                             "实际改动的方法：" + scopeGuard.getChangedMethods(),
                             "违规：" + String.join("; ", scopeGuard.getViolations())
                     ))
                     .nextActions(List.of(
-                            "检查 repairScope 定义是否准确",
+                            "检查最终修复范围是否越过候选边界",
                             "交给 reflection 轮让 LLM 重新生成范围内 patch",
-                            "确认事故根因是否需要调整为 MULTI_METHOD 或 FULL_FILE"
+                            "如果一处修复不够，让 LLM 在 candidateScope 内显式 EXPAND_SCOPE"
                     ))
                     .rawOutput(buildRawOutput(suggestion, task,
                             PatchValidationResult.builder().patchPresent(false).valid(false).build(),
@@ -210,7 +215,8 @@ public class BugFixSkill implements EngineeringSkill {
                             null, false, llmFix, scopeGuard,
                             patchDiffAnalysisService.analyze(suggestion.getPatchDraft(),
                                     PatchValidationResult.builder().patchPresent(false).valid(false).build(), scopeGuard),
-                            PatchSandboxWorkspace.direct(suggestion.getRepositoryPath(), "Blocked before sandbox creation")))
+                            PatchSandboxWorkspace.direct(suggestion.getRepositoryPath(), "Blocked before sandbox creation"),
+                            codeContextPack))
                     .build();
         }
 
@@ -237,7 +243,8 @@ public class BugFixSkill implements EngineeringSkill {
                     .rawOutput(buildRawOutput(suggestion, task, patchValidation,
                             PatchApplyResult.skipped(suggestion.getRepositoryPath(), "Blocked by PatchStaticSafety"),
                             SourceValidationResult.skipped(), null, false, llmFix, scopeGuard,
-                            diffAnalysis, PatchSandboxWorkspace.direct(suggestion.getRepositoryPath(), "Blocked before sandbox creation")))
+                            diffAnalysis, PatchSandboxWorkspace.direct(suggestion.getRepositoryPath(), "Blocked before sandbox creation"),
+                            codeContextPack))
                     .build();
         }
         PatchSandboxWorkspace patchSandbox = shouldApplyPatch(task)
@@ -258,7 +265,7 @@ public class BugFixSkill implements EngineeringSkill {
                     .rawOutput(buildRawOutput(suggestion, task, patchValidation,
                             PatchApplyResult.skipped(suggestion.getRepositoryPath(), "Patch sandbox not isolated"),
                             SourceValidationResult.skipped(), null, false, llmFix, scopeGuard,
-                            diffAnalysis, patchSandbox))
+                            diffAnalysis, patchSandbox, codeContextPack))
                     .build();
         }
         String executionRepositoryPath = firstNonBlank(patchSandbox.getSandboxRepositoryPath(), suggestion.getRepositoryPath());
@@ -314,7 +321,7 @@ public class BugFixSkill implements EngineeringSkill {
                 ))
                 .nextActions(List.of("结合 Issue/告警原文补充复现条件", "由 LLM/人工确认具体代码修改点", "交给 Test Verification Skill 生成验证计划"))
                 .rawOutput(buildRawOutput(suggestion, task, executionPatchValidation, patchApply, sourceValidation,
-                        compileGate, patchRolledBack, llmFix, scopeGuard, diffAnalysis, patchSandbox))
+                        compileGate, patchRolledBack, llmFix, scopeGuard, diffAnalysis, patchSandbox, codeContextPack))
                 .build();
     }
 
@@ -328,7 +335,8 @@ public class BugFixSkill implements EngineeringSkill {
                                                          CodeOpsBugFixAgentOutput llmFix,
                                                          PatchScopeGuardResult scopeGuard,
                                                          PatchDiffAnalysisResult diffAnalysis,
-                                                         PatchSandboxWorkspace patchSandbox) {
+                                                         PatchSandboxWorkspace patchSandbox,
+                                                         CodeContextPackEntity codeContextPack) {
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("phase", "PHASE_5_BUG_FIX_PATCH_PROPOSAL");
         output.put("patchScopeGuard", scopeGuard == null ? Map.of() : scopeGuard.toRawOutput());
@@ -354,6 +362,7 @@ public class BugFixSkill implements EngineeringSkill {
         output.put("rootCause", suggestion.getRootCause());
         output.put("confidence", suggestion.getConfidence());
         output.put("reflectionDiagnosis", llmFix == null || llmFix.getReflectionDiagnosis() == null ? Map.of() : llmFix.getReflectionDiagnosis());
+        output.put("scopeDecision", llmFix == null || llmFix.getScopeDecision() == null ? Map.of() : llmFix.getScopeDecision());
         output.put("modelRouting", llmFix == null || llmFix.getModelRouting() == null ? Map.of() : llmFix.getModelRouting());
         // Permission policy
         AgentPermissionPolicy.PolicyDecision policy = permissionPolicy.evaluate(
@@ -366,6 +375,7 @@ public class BugFixSkill implements EngineeringSkill {
         output.put("testUnifiedDiffPatch", llmFix == null ? "" : value(llmFix.getTestUnifiedDiffPatch(), ""));
         output.put("testFileRewrites", llmFix == null || llmFix.getTestFileRewrites() == null ? List.of() : llmFix.getTestFileRewrites());
         output.put("codeSnippets", suggestion.getCodeSnippets());
+        output.put("codeContextPack", codeContextPack == null ? Map.of() : codeContextPackSummary(codeContextPack));
         output.put("codeSearchMatches", extractCodeSearchMatches(task));
         output.put("verificationHints", suggestion.getVerificationHints());
         output.put("patchValidation", patchValidation.toRawOutput());
@@ -783,11 +793,128 @@ public class BugFixSkill implements EngineeringSkill {
                 """.formatted(file, file, target, value(task.getGoal(), "未提供"));
     }
 
+    private CodeContextPackEntity buildCodeContextPack(EngineeringTaskEntity task) {
+        List<String> primaryFiles = normalizeFiles(task.getRepository(), extractLocalizationTargetFiles(task));
+        List<String> candidateFiles = normalizeFiles(task.getRepository(), extractLocalizationCandidateFiles(task));
+        Set<String> supportFiles = new LinkedHashSet<>();
+        Map<String, String> reasons = new LinkedHashMap<>();
+        List<CodeSnippetEntity> snippets = new ArrayList<>();
+
+        for (String file : primaryFiles) {
+            reasons.put(file, "primary target file from CodeLocalization Agent");
+            addSnippet(snippets, task.getRepository(), file, 1, 1200);
+        }
+        for (String file : candidateFiles) {
+            if (!primaryFiles.contains(file)) {
+                reasons.put(file, "candidate expansion file from CodeLocalization Agent");
+                addSnippet(snippets, task.getRepository(), file, 1, 900);
+            }
+        }
+        for (String dependencyFile : inferSiblingDependencyFiles(task.getRepository(), snippets)) {
+            supportFiles.add(dependencyFile);
+            reasons.putIfAbsent(dependencyFile, "same-package dependency referenced by primary/candidate code");
+            addSnippet(snippets, task.getRepository(), dependencyFile, 1, 700);
+        }
+        List<String> relatedTests = findTestsForTargets(task.getRepository(), merge(primaryFiles, candidateFiles));
+        for (String testFile : relatedTests) {
+            supportFiles.add(testFile);
+            reasons.putIfAbsent(testFile, "related regression test for primary/candidate file");
+            addSnippet(snippets, task.getRepository(), testFile, 1, 500);
+        }
+        List<String> buildFiles = new ArrayList<>();
+        CodeSnippetEntity pomSnippet = toolGateway.readFileSnippet(task.getRepository(), "pom.xml", 1, 500);
+        if (Boolean.TRUE.equals(pomSnippet.getAvailable())) {
+            buildFiles.add("pom.xml");
+            reasons.put("pom.xml", "build file used to constrain dependencies and test framework");
+            snippets.add(pomSnippet);
+        }
+        for (String match : extractCodeSearchMatches(task)) {
+            Location location = parseLocation(match);
+            if (location != null && snippets.stream().noneMatch(s -> location.filePath().equals(s.getFilePath()))) {
+                reasons.putIfAbsent(location.filePath(), "fallback local search hit: " + abbreviate(match, 180));
+                addSnippet(snippets, task.getRepository(), location.filePath(), location.line(), 60);
+            }
+            if (snippets.size() >= 16) {
+                break;
+            }
+        }
+
+        List<String> missing = snippets.stream()
+                .filter(snippet -> !Boolean.TRUE.equals(snippet.getAvailable()))
+                .map(CodeSnippetEntity::getFilePath)
+                .filter(path -> path != null && !path.isBlank())
+                .distinct()
+                .toList();
+        long available = snippets.stream().filter(snippet -> Boolean.TRUE.equals(snippet.getAvailable())).count();
+        return CodeContextPackEntity.builder()
+                .strategy("LOCALIZATION_CANDIDATES_PLUS_DEPENDENCY_CLOSURE")
+                .primaryFiles(primaryFiles)
+                .candidateFiles(candidateFiles)
+                .supportFiles(new ArrayList<>(supportFiles))
+                .relatedTests(relatedTests)
+                .buildFiles(buildFiles)
+                .contextReasons(reasons)
+                .snippets(snippets)
+                .availableSnippetCount((int) available)
+                .totalSnippetCount(snippets.size())
+                .missingFiles(missing)
+                .build();
+    }
+
+    private void addSnippet(List<CodeSnippetEntity> snippets, String repository, String file, int centerLine, int radius) {
+        if (isBlank(file) || snippets.stream().anyMatch(snippet -> file.equals(snippet.getFilePath()))) {
+            return;
+        }
+        snippets.add(toolGateway.readFileSnippet(repository, file, centerLine, radius));
+    }
+
+    private Map<String, Object> codeContextPackSummary(CodeContextPackEntity pack) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("strategy", pack.getStrategy());
+        summary.put("primaryFiles", pack.getPrimaryFiles() == null ? List.of() : pack.getPrimaryFiles());
+        summary.put("candidateFiles", pack.getCandidateFiles() == null ? List.of() : pack.getCandidateFiles());
+        summary.put("supportFiles", pack.getSupportFiles() == null ? List.of() : pack.getSupportFiles());
+        summary.put("relatedTests", pack.getRelatedTests() == null ? List.of() : pack.getRelatedTests());
+        summary.put("buildFiles", pack.getBuildFiles() == null ? List.of() : pack.getBuildFiles());
+        summary.put("contextReasons", pack.getContextReasons() == null ? Map.of() : pack.getContextReasons());
+        summary.put("availableSnippetCount", pack.getAvailableSnippetCount());
+        summary.put("totalSnippetCount", pack.getTotalSnippetCount());
+        summary.put("missingFiles", pack.getMissingFiles() == null ? List.of() : pack.getMissingFiles());
+        return summary;
+    }
+
+    private List<String> merge(List<String> first, List<String> second) {
+        Set<String> values = new LinkedHashSet<>();
+        values.addAll(first == null ? List.of() : first);
+        values.addAll(second == null ? List.of() : second);
+        return new ArrayList<>(values);
+    }
+
+    private String abbreviate(String value, int maxLength) {
+        if (value == null) {
+            return "";
+        }
+        return value.length() <= maxLength ? value : value.substring(0, Math.max(0, maxLength)) + "...";
+    }
+
+    private List<String> normalizeFiles(String repository, List<String> files) {
+        if (files == null || files.isEmpty()) {
+            return List.of();
+        }
+        return files.stream()
+                .map(this::normalizeTargetFile)
+                .map(file -> resolveRepositoryFile(repository, file))
+                .filter(file -> !isBlank(file) && file.endsWith(".java"))
+                .distinct()
+                .limit(10)
+                .toList();
+    }
+
     private List<CodeSnippetEntity> loadCodeSnippets(EngineeringTaskEntity task) {
         List<CodeSnippetEntity> snippets = new ArrayList<>();
         List<String> targetFiles = extractLocalizationTargetFiles(task);
         for (String targetFile : targetFiles) {
-            String normalizedTargetFile = normalizeTargetFile(targetFile);
+            String normalizedTargetFile = resolveRepositoryFile(task.getRepository(), normalizeTargetFile(targetFile));
             if (!isBlank(normalizedTargetFile) && normalizedTargetFile.endsWith(".java")) {
                 snippets.add(toolGateway.readFileSnippet(task.getRepository(), normalizedTargetFile, 1, 240));
             }
@@ -886,7 +1013,7 @@ public class BugFixSkill implements EngineeringSkill {
         }
         Set<String> expectedNames = new LinkedHashSet<>();
         for (String targetFile : targetFiles) {
-            String normalized = normalizeTargetFile(targetFile);
+            String normalized = resolveRepositoryFile(repository, normalizeTargetFile(targetFile));
             if (isBlank(normalized) || !normalized.endsWith(".java")) {
                 continue;
             }
@@ -928,6 +1055,48 @@ public class BugFixSkill implements EngineeringSkill {
             int javaIndex = normalized.lastIndexOf(".java");
             String withoutJavaSuffix = javaIndex >= 0 ? normalized.substring(0, javaIndex) : normalized;
             return "src/main/java/" + withoutJavaSuffix.replace('.', '/') + ".java";
+        }
+        return normalized;
+    }
+
+    private String resolveRepositoryFile(String repository, String file) {
+        if (isBlank(file)) {
+            return "";
+        }
+        String normalized = file.trim().replace('\\', '/');
+        Path repo = isBlank(repository) ? Path.of("").toAbsolutePath().normalize() : Path.of(repository).toAbsolutePath().normalize();
+        Path direct = repo.resolve(normalized).normalize();
+        if (direct.startsWith(repo) && Files.exists(direct) && Files.isRegularFile(direct)) {
+            return normalized;
+        }
+        if (!normalized.endsWith(".java")) {
+            return normalized;
+        }
+        String fileName = normalized.substring(normalized.lastIndexOf('/') + 1);
+        List<String> matches = new ArrayList<>();
+        for (String root : List.of("src/main/java", "src/test/java")) {
+            Path searchRoot = repo.resolve(root).normalize();
+            if (!searchRoot.startsWith(repo) || !Files.exists(searchRoot)) {
+                continue;
+            }
+            try (var paths = Files.walk(searchRoot, 12)) {
+                paths.filter(Files::isRegularFile)
+                        .filter(path -> fileName.equals(path.getFileName().toString()))
+                        .map(path -> repo.relativize(path).toString().replace('\\', '/'))
+                        .forEach(matches::add);
+            } catch (IOException ignored) {
+                // Keep the original value when repository resolution is unavailable.
+            }
+        }
+        if (matches.size() == 1) {
+            return matches.get(0);
+        }
+        if (matches.size() > 1) {
+            String preferredSuffix = "/" + fileName;
+            return matches.stream()
+                    .filter(match -> match.endsWith(preferredSuffix))
+                    .findFirst()
+                    .orElse(matches.get(0));
         }
         return normalized;
     }
@@ -1057,6 +1226,31 @@ public class BugFixSkill implements EngineeringSkill {
                     .toList();
         }
         return List.of();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> extractLocalizationCandidateFiles(EngineeringTaskEntity task) {
+        if (task.getContext() == null) {
+            return List.of();
+        }
+        Object skillOutputs = task.getContext().get("skillOutputs");
+        if (!(skillOutputs instanceof Map<?, ?> outputs)) {
+            return List.of();
+        }
+        Object repoOutput = outputs.get("repo_understanding");
+        if (!(repoOutput instanceof Map<?, ?> repoMap)) {
+            return List.of();
+        }
+        Set<String> files = new LinkedHashSet<>();
+        Object candidateFiles = repoMap.get("candidateFiles");
+        if (candidateFiles instanceof List<?> values) {
+            values.stream().map(String::valueOf).filter(value -> !value.isBlank()).forEach(files::add);
+        }
+        Object targetFiles = repoMap.get("targetFiles");
+        if (targetFiles instanceof List<?> values) {
+            values.stream().map(String::valueOf).filter(value -> !value.isBlank()).forEach(files::add);
+        }
+        return files.stream().limit(12).toList();
     }
 
     private List<Object> extractReflectionFailures(EngineeringTaskEntity task) {
@@ -1206,7 +1400,10 @@ public class BugFixSkill implements EngineeringSkill {
             }
             Object tf = codeLocalization.get("targetFiles");
             if (tf instanceof List<?> list) {
-                list.stream().map(String::valueOf).filter(v -> !v.isBlank()).forEach(rawFiles::add);
+                list.stream().map(String::valueOf).filter(v -> !v.isBlank())
+                        .map(this::normalizeTargetFile)
+                        .map(file -> resolveRepositoryFile(task.getRepository(), file))
+                        .forEach(rawFiles::add);
             }
             Object lc = codeLocalization.get("localizationConfidence");
             if (lc != null) {
@@ -1244,6 +1441,11 @@ public class BugFixSkill implements EngineeringSkill {
             return buildHighConfidenceLocalizationScope(rawMethods, rawFiles, localizationConfidence, diagnosisClues);
         }
 
+        if (!"CODE_FIX".equals(strategyType) && evidenceImpliesCodeFix(diagnosisClues, suspiciousLocations)) {
+            strategyType = "CODE_FIX";
+            localizationConfidence = "MEDIUM";
+        }
+
         // --- Phase 3: Fallback — regex extract from suspiciousLocations ---
         if (rawMethods.isEmpty()) {
             java.util.regex.Pattern methodPattern = java.util.regex.Pattern
@@ -1274,7 +1476,7 @@ public class BugFixSkill implements EngineeringSkill {
             for (String location : list(suspiciousLocations)) {
                 String file = extractFilePath(location);
                 if (file != null && !rawFiles.contains(file)) {
-                    rawFiles.add(file);
+                    rawFiles.add(resolveRepositoryFile(task.getRepository(), normalizeTargetFile(file)));
                 }
             }
         }
@@ -1289,7 +1491,7 @@ public class BugFixSkill implements EngineeringSkill {
             for (String location : list(suspiciousLocations)) {
                 String file = extractFilePath(location);
                 if (file != null && !file.contains("Controller")) {
-                    primaryFiles.add(normalizeFilePath(file));
+                    primaryFiles.add(resolveRepositoryFile(task.getRepository(), normalizeTargetFile(file)));
                 }
             }
         }
@@ -1299,7 +1501,7 @@ public class BugFixSkill implements EngineeringSkill {
             String file = extractFilePath(location);
             String method = extractMethodFromLocation(location);
             if (file != null && method != null) {
-                String normFile = normalizeFilePath(file);
+                String normFile = resolveRepositoryFile(task.getRepository(), normalizeTargetFile(file));
                 boolean isPrimary = primaryFiles.stream()
                         .anyMatch(pf -> normFile.equals(pf) || normFile.endsWith("/" + pf) || pf.endsWith("/" + normFile));
                 if (!isPrimary) {
@@ -1336,7 +1538,7 @@ public class BugFixSkill implements EngineeringSkill {
                     boolean matched = false;
                     for (String rawFile : rawFiles) {
                         if (simpleClassName(rawFile).equals(className)) {
-                            String normFile = normalizeFilePath(rawFile);
+                            String normFile = resolveRepositoryFile(task.getRepository(), normalizeTargetFile(rawFile));
                             fileMethodMap.computeIfAbsent(normFile, k -> new ArrayList<>());
                             if (!fileMethodMap.get(normFile).contains(simpleMethod)) {
                                 fileMethodMap.get(normFile).add(simpleMethod);
@@ -1358,7 +1560,7 @@ public class BugFixSkill implements EngineeringSkill {
         // Fallback: if fileMethodMap is still empty, build it from rawFiles and rawMethods
         if (fileMethodMap.isEmpty() && !rawFiles.isEmpty() && !rawMethods.isEmpty()) {
             for (String rawFile : rawFiles) {
-                String normFile = normalizeFilePath(rawFile);
+                String normFile = resolveRepositoryFile(task.getRepository(), normalizeTargetFile(rawFile));
                 fileMethodMap.put(normFile, new ArrayList<>(rawMethods));
             }
             for (String rawFile : rawFiles) {
@@ -1486,7 +1688,11 @@ public class BugFixSkill implements EngineeringSkill {
 
         scope.put("scopeType", scopeType);
         scope.put("targetMethods", allowedMethods);           // ← Guard checks THIS
-        scope.put("targetFiles", rawFiles.stream().map(this::normalizeFilePath).toList());
+        scope.put("targetFiles", rawFiles.stream()
+                .map(this::normalizeTargetFile)
+                .map(file -> resolveRepositoryFile(task.getRepository(), file))
+                .distinct()
+                .toList());
         scope.put("fileMethodMapping", allowedFileMethodMap); // ← Only allowed entries
         scope.put("candidateMethods", candidateMethods);      // ← Informational, not in guard scope
         scope.put("ignoredMethods", ignoredMethods);
@@ -1494,7 +1700,161 @@ public class BugFixSkill implements EngineeringSkill {
         scope.put("scopeReasoning", reasoning.toString());
         scope.put("localizationConfidence", localizationConfidence);
         scope.put("strategyType", strategyType);
+        scope.put("candidateScope", buildCandidateScope(task.getRepository(), rawFiles, qualifiedMethods, fileMethodMap,
+                strategyType, codeLocalization));
+        scope.put("initialScope", shallowScopeSnapshot(scope));
         return scope;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> resolveEffectiveRepairScope(Map<String, Object> initialRepairScope,
+                                                            Map<String, Object> scopeDecision) {
+        Map<String, Object> effective = new LinkedHashMap<>();
+        if (initialRepairScope != null) {
+            effective.putAll(initialRepairScope);
+        }
+        if (scopeDecision == null || scopeDecision.isEmpty()) {
+            effective.putIfAbsent("scopeDecision", Map.of(
+                    "decision", "KEEP_SCOPE",
+                    "reason", "LLM did not return scopeDecision; keep initial repair scope."
+            ));
+            return effective;
+        }
+
+        String decision = String.valueOf(scopeDecision.getOrDefault("decision", "KEEP_SCOPE"));
+        String finalScopeType = String.valueOf(scopeDecision.getOrDefault("finalScopeType",
+                effective.getOrDefault("scopeType", "FULL_FILE")));
+        List<String> finalFiles = listFromObject(scopeDecision.get("finalTargetFiles"));
+        List<String> finalMethods = listFromObject(scopeDecision.get("finalTargetMethods"));
+
+        if (!finalScopeType.isBlank()) {
+            effective.put("scopeType", finalScopeType);
+        }
+        if (!finalFiles.isEmpty()) {
+            effective.put("targetFiles", finalFiles.stream().map(this::normalizeFilePath).toList());
+        }
+        if (!finalMethods.isEmpty()) {
+            effective.put("targetMethods", finalMethods);
+            effective.put("fileMethodMapping", buildFileMethodMappingFromFinalTargets(
+                    listFromObject(effective.get("targetFiles")), finalMethods));
+        }
+        effective.put("scopeDecision", new LinkedHashMap<>(scopeDecision));
+        effective.put("scopeDecisionApplied", true);
+        effective.put("scopeDecisionType", decision);
+        return effective;
+    }
+
+    private boolean evidenceImpliesCodeFix(List<String> diagnosisClues, List<String> suspiciousLocations) {
+        String text = (String.join(" ", list(diagnosisClues)) + " " + String.join(" ", list(suspiciousLocations)))
+                .toLowerCase(Locale.ROOT);
+        return (text.contains("duplicate") && text.contains("requestid"))
+                || text.contains("idempotencyrace")
+                || text.contains("idempotency race")
+                || text.contains("check-then-act")
+                || text.contains("non-atomic")
+                || (text.contains("negative") && text.contains("stock"))
+                || (text.contains("duplicate") && text.contains("order"));
+    }
+
+    private Map<String, Object> buildCandidateScope(String repository,
+                                                    List<String> rawFiles,
+                                                    List<String> qualifiedMethods,
+                                                    Map<String, List<String>> fileMethodMap,
+                                                    String strategyType,
+                                                    Map<String, Object> codeLocalization) {
+        if ("NO_CODE_FIX".equals(strategyType) || "CONFIG_FIX".equals(strategyType)
+                || "RUNTIME_ACTION".equals(strategyType) || "CAPACITY_FIX".equals(strategyType)) {
+            return Map.of(
+                    "scopeType", "NO_CODE_FIX",
+                    "targetFiles", List.of(),
+                    "targetMethods", List.of(),
+                    "fileMethodMapping", Map.of(),
+                    "expandable", false,
+                    "source", "non-code strategy"
+            );
+        }
+
+        List<String> candidateFiles = new ArrayList<>();
+        if (codeLocalization != null && codeLocalization.get("candidateFiles") instanceof List<?> files) {
+            files.stream().map(String::valueOf).filter(v -> !v.isBlank())
+                    .map(this::normalizeTargetFile)
+                    .map(file -> resolveRepositoryFile(repository, file))
+                    .forEach(candidateFiles::add);
+        }
+        rawFiles.stream().filter(v -> !isBlank(v))
+                .map(this::normalizeTargetFile)
+                .map(file -> resolveRepositoryFile(repository, file))
+                .forEach(candidateFiles::add);
+        candidateFiles = candidateFiles.stream().distinct().toList();
+
+        List<String> candidateMethods = new ArrayList<>();
+        if (codeLocalization != null && codeLocalization.get("candidateMethods") instanceof List<?> methods) {
+            methods.stream().map(String::valueOf).filter(v -> !v.isBlank())
+                    .map(this::normalizeQualifiedMethod).forEach(candidateMethods::add);
+        }
+        qualifiedMethods.stream().filter(v -> !isBlank(v))
+                .map(this::normalizeQualifiedMethod).forEach(candidateMethods::add);
+        candidateMethods = candidateMethods.stream().filter(v -> !isBlank(v)).distinct().toList();
+
+        boolean expandable = candidateMethods.size() > 1 || candidateFiles.size() > 1;
+        if (codeLocalization != null && codeLocalization.get("expandable") instanceof Boolean value) {
+            expandable = value || expandable;
+        }
+        String scopeType = candidateMethods.size() <= 1 ? "STRICT_SINGLE_METHOD"
+                : (candidateMethods.size() <= 3 ? "MULTI_METHOD" : "FULL_FILE");
+
+        Map<String, Object> candidateScope = new LinkedHashMap<>();
+        candidateScope.put("scopeType", scopeType);
+        candidateScope.put("targetFiles", candidateFiles);
+        candidateScope.put("targetMethods", candidateMethods);
+        candidateScope.put("fileMethodMapping", fileMethodMap == null ? Map.of() : fileMethodMap);
+        candidateScope.put("expandable", expandable);
+        candidateScope.put("source", "CodeLocalization candidates + repository search matches");
+        return candidateScope;
+    }
+
+    private Map<String, Object> shallowScopeSnapshot(Map<String, Object> scope) {
+        if (scope == null || scope.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("scopeType", scope.getOrDefault("scopeType", ""));
+        snapshot.put("targetMethods", scope.getOrDefault("targetMethods", List.of()));
+        snapshot.put("targetFiles", scope.getOrDefault("targetFiles", List.of()));
+        snapshot.put("fileMethodMapping", scope.getOrDefault("fileMethodMapping", Map.of()));
+        snapshot.put("scopeConfidence", scope.getOrDefault("scopeConfidence", ""));
+        snapshot.put("scopeReasoning", scope.getOrDefault("scopeReasoning", ""));
+        snapshot.put("strategyType", scope.getOrDefault("strategyType", ""));
+        return snapshot;
+    }
+
+    private Map<String, List<String>> buildFileMethodMappingFromFinalTargets(List<String> finalFiles,
+                                                                             List<String> finalMethods) {
+        Map<String, List<String>> mapping = new LinkedHashMap<>();
+        if (finalFiles == null || finalFiles.isEmpty() || finalMethods == null || finalMethods.isEmpty()) {
+            return mapping;
+        }
+        for (String file : finalFiles) {
+            String className = simpleClassName(file);
+            List<String> methods = new ArrayList<>();
+            for (String method : finalMethods) {
+                String normalized = normalizeQualifiedMethod(method);
+                if (className.isBlank() || normalized.startsWith(className + ".") || !normalized.contains(".")) {
+                    methods.add(methodPart(normalized));
+                }
+            }
+            if (!methods.isEmpty()) {
+                mapping.put(normalizeFilePath(file), methods.stream().distinct().toList());
+            }
+        }
+        return mapping;
+    }
+
+    private List<String> listFromObject(Object value) {
+        if (!(value instanceof List<?> list) || list.isEmpty()) {
+            return List.of();
+        }
+        return list.stream().map(String::valueOf).filter(v -> !v.isBlank()).toList();
     }
 
     private String simpleClassName(String filePath) {
@@ -1564,6 +1924,18 @@ public class BugFixSkill implements EngineeringSkill {
                 + String.join(", ", candidateMethods) + ".");
         scope.put("localizationConfidence", localizationConfidence);
         scope.put("strategyType", "CODE_FIX");
+        List<String> candidateFiles = rawFiles.stream().map(this::normalizeFilePath).distinct().toList();
+        List<String> candidateScopeMethods = scopedMethods.isEmpty() ? List.copyOf(scope.get("targetMethods") instanceof List<?> l
+                ? l.stream().map(String::valueOf).toList() : List.of()) : scopedMethods;
+        scope.put("candidateScope", Map.of(
+                "scopeType", candidateScopeMethods.size() <= 1 ? "STRICT_SINGLE_METHOD" : "MULTI_METHOD",
+                "targetFiles", candidateFiles,
+                "targetMethods", candidateScopeMethods,
+                "fileMethodMapping", fileMethodMap,
+                "expandable", candidateScopeMethods.size() > 1,
+                "source", "CodeLocalization candidate methods"
+        ));
+        scope.put("initialScope", shallowScopeSnapshot(scope));
         return scope;
     }
 

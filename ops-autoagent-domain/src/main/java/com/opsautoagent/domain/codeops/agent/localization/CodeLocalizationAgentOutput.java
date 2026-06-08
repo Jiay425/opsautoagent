@@ -28,6 +28,20 @@ public class CodeLocalizationAgentOutput {
 
     private List<String> targetMethods;
 
+    private String primarySuspectMethod;
+
+    private List<String> candidateFiles;
+
+    private List<String> candidateMethods;
+
+    private String scopeSuggestion;
+
+    private String scopeConfidence;
+
+    private boolean expandable;
+
+    private List<String> expansionBoundary;
+
     private List<String> suspiciousLocations;
 
     private List<String> relatedTests;
@@ -53,6 +67,13 @@ public class CodeLocalizationAgentOutput {
                 .shouldEnterCodeRepair(false)
                 .targetFiles(List.of())
                 .targetMethods(List.of())
+                .primarySuspectMethod("")
+                .candidateFiles(List.of())
+                .candidateMethods(List.of())
+                .scopeSuggestion("NO_CODE_FIX")
+                .scopeConfidence("LOW")
+                .expandable(false)
+                .expansionBoundary(List.of())
                 .suspiciousLocations(List.of())
                 .relatedTests(List.of())
                 .reasoning(List.of())

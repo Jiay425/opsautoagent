@@ -43,4 +43,6 @@ public class CodeOpsEvalCaseReport {
     private List<CodeOpsEvalStepReport> steps;
     private List<CodeOpsReflectionReport> reflectionHistory;
     private ReportArtifacts artifacts;
+    private transient Map<String, Object> tracePayload;
+    private transient String patchDiff;
 }

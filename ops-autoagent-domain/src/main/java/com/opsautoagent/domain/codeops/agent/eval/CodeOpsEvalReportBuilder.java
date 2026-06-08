@@ -47,7 +47,7 @@ public class CodeOpsEvalReportBuilder {
         boolean testsPassed = isTestsPassed(rawOutputs);
         boolean releaseRiskGenerated = task.getSteps() != null && task.getSteps().stream()
                 .anyMatch(s -> "release_risk_analysis".equals(s.getSelectedSkill())
-                        && "SUCCESS".equals(s.getStatus()));
+                        && ("SUCCESS".equals(s.getStatus()) || "NO_DIFF".equals(s.getStatus())));
         Map<String, Object> evidenceCoverage = mapValue(rawOutputs.get("evidenceCoverage"));
         Map<String, Object> patchQuality = mapValue(rawOutputs.get("patchQuality"));
         Map<String, Object> patchSandbox = mapValue(rawOutputs.get("patchSandbox"));
@@ -87,10 +87,12 @@ public class CodeOpsEvalReportBuilder {
                 .patchQuality(patchQuality)
                 .patchSandbox(patchSandbox)
                 .failureType(extractFailureType(rawOutputs))
-                .failureSummary(extractFailureSummary(task))
+                .failureSummary("SUCCESS".equals(run.getStatus()) ? "" : extractFailureSummary(task))
                 .steps(stepReports)
                 .reflectionHistory(reflectionHistory)
                 .artifacts(buildArtifacts(batchId, run.getCaseId()))
+                .tracePayload(buildTracePayload(task, rawOutputs))
+                .patchDiff(extractPatchDiff(rawOutputs))
                 .build();
     }
 
@@ -155,7 +157,7 @@ public class CodeOpsEvalReportBuilder {
                 try {
                     Object parsed = com.alibaba.fastjson.JSON.parse(json);
                     if (parsed instanceof Map<?, ?> map) {
-                        map.forEach((k, v) -> merged.putIfAbsent(String.valueOf(k), v));
+                        map.forEach((k, v) -> merged.put(String.valueOf(k), v));
                     }
                 } catch (Exception ignored) {
                 }
@@ -384,6 +386,111 @@ public class CodeOpsEvalReportBuilder {
                 .traceJsonPath(base + "-trace.json")
                 .patchDiffPath(base + ".diff")
                 .build();
+    }
+
+    private Map<String, Object> buildTracePayload(EngineeringTaskEntity task, Map<String, Object> rawOutputs) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        if (task == null) {
+            return payload;
+        }
+        payload.put("taskId", task.getTaskId());
+        payload.put("taskType", task.getTaskType());
+        payload.put("status", task.getStatus());
+        payload.put("repository", task.getRepository());
+        payload.put("goal", task.getGoal());
+        payload.put("usedToolCalls", task.getUsedToolCalls());
+        payload.put("finalSummary", task.getFinalSummary());
+        payload.put("context", task.getContext());
+        List<Map<String, Object>> steps = new ArrayList<>();
+        if (task.getSteps() != null) {
+            for (EngineeringTaskStepEntity step : task.getSteps()) {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("stepNo", step.getStepNo());
+                item.put("decision", step.getDecision());
+                item.put("selectedSkill", step.getSelectedSkill());
+                item.put("status", step.getStatus());
+                item.put("summary", step.getResultSummary());
+                item.put("rawOutput", parseRawEvidence(step.getRawEvidenceJson()));
+                steps.add(item);
+            }
+        }
+        payload.put("steps", steps);
+        payload.put("latestMergedRawOutput", rawOutputs);
+        return payload;
+    }
+
+    private Object parseRawEvidence(String json) {
+        if (json == null || json.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return com.alibaba.fastjson.JSON.parse(json);
+        } catch (Exception ignored) {
+            return json;
+        }
+    }
+
+    private String extractPatchDiff(Map<String, Object> rawOutputs) {
+        Object direct = firstNonBlank(rawOutputs.get("unifiedDiffPatch"),
+                rawOutputs.get("patchDiff"),
+                rawOutputs.get("patchDraft"));
+        String found = findDiffText(direct);
+        if (!found.isBlank()) {
+            return found;
+        }
+        return findDiffText(rawOutputs);
+    }
+
+    private Object firstNonBlank(Object... values) {
+        if (values == null) {
+            return null;
+        }
+        for (Object value : values) {
+            if (value != null && !String.valueOf(value).isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private String findDiffText(Object value) {
+        if (value == null) {
+            return "";
+        }
+        if (value instanceof String text) {
+            String lower = text.toLowerCase();
+            if ((text.contains("--- ") && text.contains("+++ "))
+                    || lower.contains("diff --git")
+                    || lower.contains("@@")) {
+                return text;
+            }
+            return "";
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                String key = String.valueOf(entry.getKey()).toLowerCase();
+                String nested = findDiffText(entry.getValue());
+                if (!nested.isBlank() && (key.contains("patch") || key.contains("diff") || key.contains("output"))) {
+                    return nested;
+                }
+            }
+            for (Object nestedValue : map.values()) {
+                String nested = findDiffText(nestedValue);
+                if (!nested.isBlank()) {
+                    return nested;
+                }
+            }
+        }
+        if (value instanceof List<?> list) {
+            for (Object item : list) {
+                String nested = findDiffText(item);
+                if (!nested.isBlank()) {
+                    return nested;
+                }
+            }
+        }
+        return "";
     }
 
     private List<CodeOpsEvalStepReport> buildPipelineTrace(List<CodeOpsEvalCaseReport> cases) {
