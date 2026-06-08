@@ -82,12 +82,12 @@ public class PrometheusMetricGateway extends AbstractOpsHttpGateway implements I
         StringBuilder rawData = new StringBuilder();
         List<Map<String, String>> promQlQueries = new ArrayList<>();
 
-        query(command, "traffic_qps", qps(command.getServiceName()), observations, rawData, promQlQueries);
-        query(command, "http_5xx_qps", errorQps(command.getServiceName()), observations, rawData, promQlQueries);
-        query(command, "http_5xx_rate_percent", errorRatePercent(command.getServiceName()), observations, rawData, promQlQueries);
-        query(command, "http_avg_latency_seconds", avgLatency(command.getServiceName()), observations, rawData, promQlQueries);
-        query(command, "http_p95_latency_seconds", latencyQuantile(command.getServiceName(), "0.95"), observations, rawData, promQlQueries);
-        query(command, "http_p99_latency_seconds", latencyQuantile(command.getServiceName(), "0.99"), observations, rawData, promQlQueries);
+        query(command, "traffic_qps", qps(command), observations, rawData, promQlQueries);
+        query(command, "http_5xx_qps", errorQps(command), observations, rawData, promQlQueries);
+        query(command, "http_5xx_rate_percent", errorRatePercent(command), observations, rawData, promQlQueries);
+        query(command, "http_avg_latency_seconds", avgLatency(command), observations, rawData, promQlQueries);
+        query(command, "http_p95_latency_seconds", latencyQuantile(command, "0.95"), observations, rawData, promQlQueries);
+        query(command, "http_p99_latency_seconds", latencyQuantile(command, "0.99"), observations, rawData, promQlQueries);
         query(command, "process_cpu_usage", processCpu(command.getServiceName()), observations, rawData, promQlQueries);
         query(command, "system_cpu_usage", systemCpu(command.getServiceName()), observations, rawData, promQlQueries);
         query(command, "jvm_memory_used_bytes", jvmMemory(command.getServiceName()), observations, rawData, promQlQueries);
@@ -112,6 +112,8 @@ public class PrometheusMetricGateway extends AbstractOpsHttpGateway implements I
                         "sourceMode", canUseMcp() ? "REAL_MCP_OR_HTTP" : "REAL_HTTP",
                         "baseUrl", value(baseUrl),
                         "mcpEnabled", canUseMcp(),
+                        "endpoint", value(command.getEndpoint()),
+                        "endpointPath", endpointPath(command),
                         "timeWindow", command.getStartTime() + " ~ " + command.getEndTime(),
                         "queries", promQlQueries,
                         "fixtureFallback", false))
@@ -313,41 +315,45 @@ public class PrometheusMetricGateway extends AbstractOpsHttpGateway implements I
         }
     }
 
-    private String qps(String serviceName) {
+    private String qps(IncidentCommandEntity command) {
+        String serviceName = command.getServiceName();
         return joinOr(
-                "sum(rate(http_server_requests_seconds_count" + serviceLabel(serviceName, "application") + "[1m]))",
-                "sum(rate(http_server_requests_seconds_count" + serviceLabel(serviceName, "job") + "[1m]))",
-                "sum(rate(http_server_requests_seconds_count" + serviceLabel(serviceName, "service") + "[1m]))",
-                "sum(rate(http_server_requests_seconds_count" + serviceLabel(serviceName, "") + "[1m]))");
+                "sum(rate(http_server_requests_seconds_count" + httpServiceLabel(command, "application") + "[1m]))",
+                "sum(rate(http_server_requests_seconds_count" + httpServiceLabel(command, "job") + "[1m]))",
+                "sum(rate(http_server_requests_seconds_count" + httpServiceLabel(command, "service") + "[1m]))",
+                "sum(rate(http_server_requests_seconds_count" + httpServiceLabel(command, "") + "[1m]))");
     }
 
-    private String errorQps(String serviceName) {
+    private String errorQps(IncidentCommandEntity command) {
+        String serviceName = command.getServiceName();
+        String status = "status=~\"5..\"";
         return joinOr(
-                "sum(rate(http_server_requests_seconds_count" + serviceLabel(serviceName, "application", "status=~\"5..\"") + "[1m]))",
-                "sum(rate(http_server_requests_seconds_count" + serviceLabel(serviceName, "job", "status=~\"5..\"") + "[1m]))",
-                "sum(rate(http_server_requests_seconds_count" + serviceLabel(serviceName, "service", "status=~\"5..\"") + "[1m]))",
-                "sum(rate(http_server_requests_seconds_count" + selector("status=~\"5..\"") + "[1m]))");
+                "sum(rate(http_server_requests_seconds_count" + httpServiceLabel(command, "application", status) + "[1m]))",
+                "sum(rate(http_server_requests_seconds_count" + httpServiceLabel(command, "job", status) + "[1m]))",
+                "sum(rate(http_server_requests_seconds_count" + httpServiceLabel(command, "service", status) + "[1m]))",
+                "sum(rate(http_server_requests_seconds_count" + httpServiceLabel(command, "", status) + "[1m]))");
     }
 
-    private String errorRatePercent(String serviceName) {
-        return "100 * (" + errorQps(serviceName) + ") / clamp_min((" + qps(serviceName) + "), 0.001)";
+    private String errorRatePercent(IncidentCommandEntity command) {
+        return "100 * (" + errorQps(command) + ") / clamp_min((" + qps(command) + "), 0.001)";
     }
 
-    private String avgLatency(String serviceName) {
+    private String avgLatency(IncidentCommandEntity command) {
+        String serviceName = command.getServiceName();
         String sum = joinOr(
-                "sum(rate(http_server_requests_seconds_sum" + serviceLabel(serviceName, "application") + "[1m]))",
-                "sum(rate(http_server_requests_seconds_sum" + serviceLabel(serviceName, "job") + "[1m]))",
-                "sum(rate(http_server_requests_seconds_sum" + serviceLabel(serviceName, "service") + "[1m]))",
-                "sum(rate(http_server_requests_seconds_sum" + serviceLabel(serviceName, "") + "[1m]))");
-        return "(" + sum + ") / clamp_min((" + qps(serviceName) + "), 0.001)";
+                "sum(rate(http_server_requests_seconds_sum" + httpServiceLabel(command, "application") + "[1m]))",
+                "sum(rate(http_server_requests_seconds_sum" + httpServiceLabel(command, "job") + "[1m]))",
+                "sum(rate(http_server_requests_seconds_sum" + httpServiceLabel(command, "service") + "[1m]))",
+                "sum(rate(http_server_requests_seconds_sum" + httpServiceLabel(command, "") + "[1m]))");
+        return "(" + sum + ") / clamp_min((" + qps(command) + "), 0.001)";
     }
 
-    private String latencyQuantile(String serviceName, String quantile) {
+    private String latencyQuantile(IncidentCommandEntity command, String quantile) {
         return joinOr(
-                "histogram_quantile(" + quantile + ", sum(rate(http_server_requests_seconds_bucket" + serviceLabel(serviceName, "application") + "[1m])) by (le))",
-                "histogram_quantile(" + quantile + ", sum(rate(http_server_requests_seconds_bucket" + serviceLabel(serviceName, "job") + "[1m])) by (le))",
-                "histogram_quantile(" + quantile + ", sum(rate(http_server_requests_seconds_bucket" + serviceLabel(serviceName, "service") + "[1m])) by (le))",
-                "histogram_quantile(" + quantile + ", sum(rate(http_server_requests_seconds_bucket" + serviceLabel(serviceName, "") + "[1m])) by (le))");
+                "histogram_quantile(" + quantile + ", sum(rate(http_server_requests_seconds_bucket" + httpServiceLabel(command, "application") + "[1m])) by (le))",
+                "histogram_quantile(" + quantile + ", sum(rate(http_server_requests_seconds_bucket" + httpServiceLabel(command, "job") + "[1m])) by (le))",
+                "histogram_quantile(" + quantile + ", sum(rate(http_server_requests_seconds_bucket" + httpServiceLabel(command, "service") + "[1m])) by (le))",
+                "histogram_quantile(" + quantile + ", sum(rate(http_server_requests_seconds_bucket" + httpServiceLabel(command, "") + "[1m])) by (le))");
     }
 
     private String processCpu(String serviceName) {
@@ -440,6 +446,21 @@ public class PrometheusMetricGateway extends AbstractOpsHttpGateway implements I
         return "{" + serviceLabelName + "=\"" + escapeLabelValue(serviceName) + "\"," + extraLabel + "}";
     }
 
+    private String httpServiceLabel(IncidentCommandEntity command, String serviceLabelName) {
+        return httpServiceLabel(command, serviceLabelName, "");
+    }
+
+    private String httpServiceLabel(IncidentCommandEntity command, String serviceLabelName, String extraLabel) {
+        String endpointPath = endpointPath(command);
+        String endpointLabel = isBlank(endpointPath) ? "" : "uri=\"" + escapeLabelValue(endpointPath) + "\"";
+        String labels = isBlank(endpointLabel) ? extraLabel : endpointLabel + (isBlank(extraLabel) ? "" : "," + extraLabel);
+        if (isBlank(serviceLabelName)) {
+            return selector(labels);
+        }
+        return "{" + serviceLabelName + "=\"" + escapeLabelValue(command.getServiceName()) + "\""
+                + (isBlank(labels) ? "" : "," + labels) + "}";
+    }
+
     private String selector(String labelExpression) {
         return "{" + labelExpression + "}";
     }
@@ -453,6 +474,45 @@ public class PrometheusMetricGateway extends AbstractOpsHttpGateway implements I
             return "";
         }
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private String endpointPath(IncidentCommandEntity command) {
+        String endpoint = command == null ? "" : firstNonBlank(command.getEndpoint(), endpointFromProblem(command.getProblem()));
+        if (isBlank(endpoint)) {
+            return "";
+        }
+        String value = endpoint.trim();
+        int space = value.indexOf(' ');
+        if (space >= 0 && space < value.length() - 1) {
+            value = value.substring(space + 1).trim();
+        }
+        return value;
+    }
+
+    private String endpointFromProblem(String problem) {
+        if (isBlank(problem)) {
+            return "";
+        }
+        String marker = "Affected endpoints:";
+        int index = problem.indexOf(marker);
+        if (index < 0) {
+            return "";
+        }
+        String raw = problem.substring(index + marker.length()).trim();
+        int comma = raw.indexOf(',');
+        return comma >= 0 ? raw.substring(0, comma).trim() : raw;
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (!isBlank(value)) {
+                return value;
+            }
+        }
+        return "";
     }
 
     private String buildQueryRangeUrl(IncidentCommandEntity command, String promQl) {

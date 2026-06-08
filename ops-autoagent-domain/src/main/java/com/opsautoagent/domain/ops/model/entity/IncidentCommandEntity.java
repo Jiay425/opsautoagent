@@ -19,6 +19,8 @@ public class IncidentCommandEntity {
 
     private String problem;
 
+    private String endpoint;
+
     private String traceId;
 
     private Integer maxStep;

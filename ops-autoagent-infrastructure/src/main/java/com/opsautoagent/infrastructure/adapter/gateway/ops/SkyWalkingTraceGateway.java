@@ -72,9 +72,10 @@ public class SkyWalkingTraceGateway extends AbstractOpsHttpGateway implements IO
             spans.add("serviceName is not provided; service-specific queries (service metadata, metrics, error trace samples, slow trace samples) are skipped.");
         } else {
             String serviceId = resolveServiceId(command, spans, rawData);
+            String endpointId = resolveEndpointId(command, serviceId, spans, rawData);
             runQuery(command, "service_metrics", buildServiceMetricsQuery(command), spans, rawData);
-            runQuery(command, "error_trace_samples", buildBasicTraceQuery(command, serviceId, "ERROR", "BY_START_TIME"), spans, rawData);
-            runQuery(command, "slow_trace_samples", buildBasicTraceQuery(command, serviceId, "ALL", "BY_DURATION"), spans, rawData);
+            runQuery(command, "error_trace_samples", buildBasicTraceQuery(command, serviceId, endpointId, "ERROR", "BY_START_TIME"), spans, rawData);
+            runQuery(command, "slow_trace_samples", buildBasicTraceQuery(command, serviceId, endpointId, "ALL", "BY_DURATION"), spans, rawData);
         }
 
         return TraceEvidenceEntity.builder()
@@ -89,7 +90,8 @@ public class SkyWalkingTraceGateway extends AbstractOpsHttpGateway implements IO
                         "graphqlUrl", value(graphqlUrl),
                         "traceId", value(command.getTraceId()),
                         "serviceName", value(command.getServiceName()),
-                        "endpoint", value(command.getProblem()),
+                        "endpoint", firstNonBlank(command.getEndpoint(), endpointFromProblem(command.getProblem())),
+                        "endpointPath", endpointPath(command),
                         "timeWindow", command.getStartTime() + " ~ " + command.getEndTime(),
                         "queriedSections", List.of("trace_detail", "service_metadata", "service_metrics", "error_trace_samples", "slow_trace_samples"),
                         "fixtureFallback", false))
@@ -149,6 +151,47 @@ public class SkyWalkingTraceGateway extends AbstractOpsHttpGateway implements IO
         }
     }
 
+    private String resolveEndpointId(IncidentCommandEntity command, String serviceId, List<String> spans, StringBuilder rawData) {
+        String endpointPath = endpointPath(command);
+        if (isBlank(endpointPath) || isBlank(serviceId) || "0".equals(serviceId)) {
+            spans.add("endpoint_metadata query skipped; endpoint or serviceId is blank.");
+            return "";
+        }
+        try {
+            String query = buildSearchEndpointQuery(serviceId, endpointPath);
+            String response = httpPostJson("skywalking", command.getSessionId(), command.getDiagnosisId(),
+                    graphqlUrl, toGraphqlBody(query), username, password);
+            rawData.append("\n\n### endpoint_metadata\n")
+                    .append(response);
+
+            JSONObject root = JSON.parseObject(response);
+            JSONArray endpoints = root.getJSONObject("data") == null
+                    ? null
+                    : root.getJSONObject("data").getJSONArray("searchEndpoint");
+            if (endpoints == null || endpoints.isEmpty()) {
+                spans.add("endpoint_metadata query returned empty for endpoint=" + endpointPath + "; fallback to service-level trace samples.");
+                return "";
+            }
+            for (int i = 0; i < endpoints.size(); i++) {
+                JSONObject endpoint = endpoints.getJSONObject(i);
+                String name = endpoint.getString("name");
+                if (endpointPath.equals(name) || (name != null && name.contains(endpointPath))) {
+                    String endpointId = endpoint.getString("id");
+                    spans.add("endpoint_metadata query succeeded. endpoint=" + endpointPath + ", endpointId=" + endpointId);
+                    return endpointId == null ? "" : endpointId;
+                }
+            }
+            String fallbackEndpointId = endpoints.getJSONObject(0).getString("id");
+            spans.add("endpoint_metadata query succeeded with fuzzy match. endpoint=" + endpointPath + ", endpointId=" + fallbackEndpointId);
+            return fallbackEndpointId == null ? "" : fallbackEndpointId;
+        } catch (Exception e) {
+            log.warn("SkyWalking endpoint metadata query failed. service={}, endpoint={}",
+                    command.getServiceName(), endpointPath, e);
+            spans.add("endpoint_metadata query failed: " + e.getMessage() + "; fallback to service-level trace samples.");
+            return "";
+        }
+    }
+
     private String buildSearchServiceQuery(IncidentCommandEntity command) {
         String serviceName = graphqlEscape(command.getServiceName());
         String start = skyWalkingTime(command.getStartTime());
@@ -165,6 +208,17 @@ public class SkyWalkingTraceGateway extends AbstractOpsHttpGateway implements IO
                   }
                 }
                 """.formatted(start, end, serviceName);
+    }
+
+    private String buildSearchEndpointQuery(String serviceId, String endpointPath) {
+        return """
+                query searchEndpoint {
+                  searchEndpoint(keyword: "%s", serviceId: "%s", limit: 10) {
+                    id
+                    name
+                  }
+                }
+                """.formatted(graphqlEscape(endpointPath), graphqlEscape(serviceId));
     }
 
     private String buildTraceDetailQuery(String traceId) {
@@ -237,13 +291,15 @@ public class SkyWalkingTraceGateway extends AbstractOpsHttpGateway implements IO
                 serviceName, start, end);
     }
 
-    private String buildBasicTraceQuery(IncidentCommandEntity command, String serviceId, String traceState, String queryOrder) {
+    private String buildBasicTraceQuery(IncidentCommandEntity command, String serviceId, String endpointId, String traceState, String queryOrder) {
         String start = skyWalkingTime(command.getStartTime());
         String end = skyWalkingTime(command.getEndTime());
+        String endpointClause = isBlank(endpointId) ? "" : "endpointId: \"" + graphqlEscape(endpointId) + "\",";
         return """
                 query basicTraces {
                   queryBasicTraces(condition: {
                     serviceId: "%s",
+                    %s
                     queryDuration: {
                       start: "%s",
                       end: "%s",
@@ -263,7 +319,7 @@ public class SkyWalkingTraceGateway extends AbstractOpsHttpGateway implements IO
                     }
                   }
                 }
-                """.formatted(graphqlEscape(serviceId), start, end, traceState, queryOrder);
+                """.formatted(graphqlEscape(serviceId), endpointClause, start, end, traceState, queryOrder);
     }
 
     private String toGraphqlBody(String query) {
@@ -292,6 +348,45 @@ public class SkyWalkingTraceGateway extends AbstractOpsHttpGateway implements IO
 
     private String value(String value) {
         return value == null ? "" : value;
+    }
+
+    private String endpointPath(IncidentCommandEntity command) {
+        String endpoint = command == null ? "" : firstNonBlank(command.getEndpoint(), endpointFromProblem(command.getProblem()));
+        if (isBlank(endpoint)) {
+            return "";
+        }
+        String value = endpoint.trim();
+        int space = value.indexOf(' ');
+        if (space >= 0 && space < value.length() - 1) {
+            value = value.substring(space + 1).trim();
+        }
+        return value;
+    }
+
+    private String endpointFromProblem(String problem) {
+        if (isBlank(problem)) {
+            return "";
+        }
+        String marker = "Affected endpoints:";
+        int index = problem.indexOf(marker);
+        if (index < 0) {
+            return "";
+        }
+        String raw = problem.substring(index + marker.length()).trim();
+        int comma = raw.indexOf(',');
+        return comma >= 0 ? raw.substring(0, comma).trim() : raw;
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (!isBlank(value)) {
+                return value;
+            }
+        }
+        return "";
     }
 
     private String graphqlEscape(String value) {

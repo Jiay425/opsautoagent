@@ -81,6 +81,7 @@ public class CodeOpsAlertTriggerService {
         context.put("startTime", command.getStartTime());
         context.put("endTime", command.getEndTime());
         context.put("traceId", command.getTraceId());
+        context.put("endpoint", firstNonBlank(command.getEndpoint(), stringValue(parseJson(alertEvent.getLabelsJson()).get("endpoint"))));
         context.put("opsDiagnosisId", command.getDiagnosisId());
         context.put("repository", resolveRepository(alertEvent));
         context.put("allowPatchApply", booleanFlag(alertEvent, "codeops.allowPatchApply", true));

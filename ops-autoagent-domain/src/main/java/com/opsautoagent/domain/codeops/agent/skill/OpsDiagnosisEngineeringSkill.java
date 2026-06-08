@@ -137,6 +137,7 @@ public class OpsDiagnosisEngineeringSkill implements EngineeringSkill {
                 extractServiceName(task.getGoal()),
                 "unknown-service");
         String traceId = firstNonBlank(stringValue(context.get("traceId")), stringValue(context.get("trace")));
+        String endpoint = firstNonBlank(stringValue(context.get("endpoint")), firstAffectedEndpoint(context), firstAffectedEndpoint(task.getGoal()));
         String startTime = firstNonBlank(stringValue(context.get("startTime")), defaultStartTime());
         String endTime = firstNonBlank(stringValue(context.get("endTime")), defaultEndTime());
         return IncidentCommandEntity.builder()
@@ -144,6 +145,7 @@ public class OpsDiagnosisEngineeringSkill implements EngineeringSkill {
                 .startTime(startTime)
                 .endTime(endTime)
                 .problem(task.getGoal())
+                .endpoint(endpoint)
                 .traceId(traceId)
                 .maxStep(6)
                 .sessionId("codeops-" + UUID.randomUUID())
@@ -224,6 +226,7 @@ public class OpsDiagnosisEngineeringSkill implements EngineeringSkill {
         details.put("source", context.get("source"));
         details.put("evidenceMode", firstNonBlank(stringValue(context.get("evidenceMode")), "LIVE"));
         details.put("fixtureFallbackAllowed", context.getOrDefault("fixtureFallbackAllowed", false));
+        details.put("endpoint", value(command.getEndpoint()));
 
         MetricEvidenceEntity metricEvidence = safeQueryMetrics(command);
         LogEvidenceEntity logEvidence = safeQueryLogs(command);
@@ -309,6 +312,21 @@ public class OpsDiagnosisEngineeringSkill implements EngineeringSkill {
             }
         }
         return affectedEndpointsFromGoal(task.getGoal());
+    }
+
+    private String firstAffectedEndpoint(Map<String, Object> context) {
+        if (context == null || context.isEmpty()) {
+            return "";
+        }
+        Object value = context.get("affectedEndpoints");
+        if (value instanceof List<?> list) {
+            return list.stream().map(String::valueOf).filter(v -> !isBlank(v)).findFirst().orElse("");
+        }
+        return "";
+    }
+
+    private String firstAffectedEndpoint(String goal) {
+        return affectedEndpointsFromGoal(goal).stream().findFirst().orElse("");
     }
 
     private List<String> affectedEndpointsFromGoal(String goal) {
