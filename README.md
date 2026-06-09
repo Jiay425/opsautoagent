@@ -39,6 +39,24 @@ The framework has been verified with real Prometheus + Alertmanager firing alert
 
 The latest verification runs are written locally under `data/real-chain-runs/` and intentionally ignored by git.
 
+### Cross-File Incident-to-Fix Verification
+
+The latest hardening focuses on incidents where the top stack frame is not the whole root cause. In the cross-file idempotency case, the alert points to `OrderSubmitService.submitFlashSale`, while the actual race sits in the idempotency component. The framework now treats the first localization result as a candidate boundary, then lets the repair agent expand the scope only inside verified candidate files.
+
+Latest verified LLM run:
+
+| Item | Value |
+|------|-------|
+| Case | `scope-expansion-cross-file-idempotency` |
+| Symptom | Duplicate `requestId` accepted twice; 5xx and order conflicts increase |
+| Result | `SUCCESS` |
+| Pipeline | Ops diagnosis → code localization → RAG → patch generation → Guard failure → reflection retry → test failure → failure log feedback → patch retry → tests pass → release risk |
+| Coverage | code localization `1.0`, patch `1.0`, test `1.0`, risk `1.0` |
+| Safety | Patch applied in isolated sandbox; compile and Maven test verification passed |
+| Artifacts | JSON report, Markdown report, full trace JSON, patch diff |
+
+The repair agent receives a `CodeContextPack`, not only search hits. It includes primary suspect files, candidate expansion files, same-package dependencies, related tests, build files, and a short reason for each snippet. This keeps the flow LLM-first while giving deterministic guardrails enough structure to block hallucinated or out-of-scope patches.
+
 **Repair Scope System (Phase 1)**
 
 | scopeType | Trigger | Behavior |
@@ -76,6 +94,7 @@ Registered tools currently include `repo.create_snapshot`, `repo.search_text`, `
 | `incident-db-pool-runtime-pressure` | NO_CODE_FIX | HikariCP pool exhaustion |
 | `scope-violation-reflection` | STRICT_SINGLE_METHOD | Guard catches over-scope → reflection recovers |
 | `test-assertion-reflection` | FULL_FILE | Test assertion failure → reflection recovers |
+| `scope-expansion-cross-file-idempotency` | FULL_FILE | Stack top in order submit method, root cause expands to idempotency component |
 
 ### Architecture
 
@@ -173,6 +192,24 @@ Alertmanager Webhook
 
 真实链路运行产物保存在本地 `data/real-chain-runs/`，已加入 gitignore，避免提交日志、沙箱和本地运行数据。
 
+### 跨文件 Incident-to-Fix 验证
+
+最新一轮硬化重点解决“栈顶方法不等于完整根因”的问题。在跨文件幂等 case 中，告警和 Trace 首先指向 `OrderSubmitService.submitFlashSale`，但真正竞态点在幂等组件。现在系统不会把第一层定位结果锁死为最终修复边界，而是把它当成候选边界；修复 Agent 可以基于完整代码上下文扩展范围，但只能在已验证的候选文件内扩展。
+
+最新真实 LLM 验证结果：
+
+| 项目 | 结果 |
+|------|------|
+| Case | `scope-expansion-cross-file-idempotency` |
+| 现象 | 重复 `requestId` 被成功处理两次，5xx 和订单冲突升高 |
+| 结果 | `SUCCESS` |
+| 链路 | 运维诊断 → 代码定位 → RAG → 生成补丁 → Guard 拦截 → 反射重试 → 测试失败 → 失败日志回灌 → 再次修复 → 测试通过 → 发布风险分析 |
+| 覆盖率 | 代码定位 `1.0`，补丁 `1.0`，测试 `1.0`，风险 `1.0` |
+| 安全性 | 补丁在隔离沙箱应用；编译和 Maven 测试验证通过 |
+| 产物 | JSON 报告、Markdown 报告、完整 trace JSON、patch diff |
+
+修复 Agent 接收的是 `CodeContextPack`，不是单纯的搜索命中行。上下文包包含主嫌疑文件、候选扩展文件、同包依赖、相关测试、构建文件，以及每段代码进入上下文的原因。这样既保留 LLM 自主判断，又让确定性 Guard 有足够结构拦截幻觉补丁和越界修改。
+
 **Repair Scope 修复作用域（Phase 1）**
 
 | scopeType | 触发条件 | 行为 |
@@ -210,6 +247,7 @@ Alertmanager Webhook
 | `incident-db-pool-runtime-pressure` | NO_CODE_FIX | HikariCP 连接池耗尽 |
 | `scope-violation-reflection` | STRICT_SINGLE_METHOD | Guard 拦截越界 → 反射恢复 |
 | `test-assertion-reflection` | FULL_FILE | 测试断言失败 → 反射恢复 |
+| `scope-expansion-cross-file-idempotency` | FULL_FILE | 栈顶在下单方法，根因扩展到幂等组件 |
 
 ### 架构
 
