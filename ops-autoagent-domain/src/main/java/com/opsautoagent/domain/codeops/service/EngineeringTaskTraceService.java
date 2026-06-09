@@ -21,7 +21,7 @@ public class EngineeringTaskTraceService {
 
     private static final List<StageDefinition> INCIDENT_FIX_STAGES = List.of(
             new StageDefinition("ops_evidence", "线上证据采集", List.of("ops_diagnosis")),
-            new StageDefinition("code_localization", "代码定位", List.of("repo_understanding")),
+            new StageDefinition("code_localization", "代码定位", List.of("agent_loop_investigation", "repo_understanding")),
             new StageDefinition("knowledge_rag", "知识检索", List.of("engineering_knowledge_rag")),
             new StageDefinition("code_repair", "代码修复", List.of("bug_fix")),
             new StageDefinition("test_verification", "编译测试", List.of("test_verification")),
@@ -80,7 +80,8 @@ public class EngineeringTaskTraceService {
         putIfPresent(summary, "incidentSummary", workingMemory.getIncidentSummary());
         putIfPresent(summary, "codeHints", workingMemory.getCodeHints());
         putIfPresent(summary, "codeLocalization", compactMap(workingMemory.getCodeLocalization(),
-                "localizationConfidence", "targetFiles", "targetMethods", "suspiciousLocations", "missingEvidence"));
+                "localizationConfidence", "targetFiles", "targetMethods", "suspiciousLocations", "missingEvidence",
+                "finalAnswer", "turns", "trace", "recommendedTests", "strategyType"));
         putIfPresent(summary, "rootCauseAnalysis", workingMemory.getRootCauseAnalysis());
         putIfPresent(summary, "patchGeneration", compactMap(workingMemory.getPatchGeneration(),
                 "rootCause", "confidence", "targetFiles", "llmGenerated", "patchValidation"));
@@ -254,7 +255,9 @@ public class EngineeringTaskTraceService {
         }
         return switch (stageId) {
             case "ops_evidence" -> pick(raw, "evidenceCoverage", "evidenceProvenance", "evidenceSources", "rootCause", "confidence", "traceId");
-            case "code_localization" -> pick(raw, "targetFiles", "targetMethods", "suspiciousLocations", "localizationConfidence", "codeSearchMatches");
+            case "code_localization" -> pick(raw, "targetFiles", "targetMethods", "suspiciousLocations",
+                    "localizationConfidence", "codeSearchMatches", "finalAnswer", "turns", "trace",
+                    "recommendedTests", "strategyType", "stopReason");
             case "knowledge_rag" -> pick(raw, "knowledgeMatches", "runbookMatches");
             case "code_repair" -> pick(raw, "llmGenerated", "patchGenerated", "rootCause", "patchApply", "patchScopeGuard", "patchSandbox", "patchQuality", "compileGate");
             case "test_verification" -> pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults", "testFailureType", "failedTestFiles");
@@ -298,8 +301,22 @@ public class EngineeringTaskTraceService {
         putIfPresent(highlights, "rollbackConcerns", rawEvidence.get("rollbackConcerns"));
         putIfPresent(highlights, "agentRuntime", rawEvidence.get("agentRuntime"));
         putIfPresent(highlights, "toolRuntime", rawEvidence.get("toolRuntime"));
+        if ("agent_loop_investigation".equals(skillId)) {
+            putAgentLoopHighlights(highlights, rawEvidence);
+        }
         highlights.put("skillId", skillId);
         return highlights;
+    }
+
+    private void putAgentLoopHighlights(Map<String, Object> highlights, Map<String, Object> rawEvidence) {
+        putIfPresent(highlights, "agentLoopFinalAnswer", rawEvidence.get("finalAnswer"));
+        putIfPresent(highlights, "agentLoopTurns", rawEvidence.get("turns"));
+        putIfPresent(highlights, "agentLoopTrace", rawEvidence.get("trace"));
+        putIfPresent(highlights, "agentLoopStopReason", rawEvidence.get("stopReason"));
+        putIfPresent(highlights, "targetFiles", rawEvidence.get("targetFiles"));
+        putIfPresent(highlights, "recommendedTests", rawEvidence.get("recommendedTests"));
+        putIfPresent(highlights, "strategyType", rawEvidence.get("strategyType"));
+        putIfPresent(highlights, "localizationConfidence", rawEvidence.get("localizationConfidence"));
     }
 
     private Map<String, Object> collectLatestRawOutputs(EngineeringTaskEntity task) {

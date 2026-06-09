@@ -1,6 +1,7 @@
 package com.opsautoagent.domain.codeops.agent.orchestrator;
 
 import com.opsautoagent.domain.codeops.agent.skill.BugFixSkill;
+import com.opsautoagent.domain.codeops.agent.skill.AgentLoopEngineeringSkill;
 import com.opsautoagent.domain.codeops.agent.skill.EngineeringKnowledgeRagSkill;
 import com.opsautoagent.domain.codeops.agent.skill.OpsDiagnosisEngineeringSkill;
 import com.opsautoagent.domain.codeops.agent.skill.PrReviewSkill;
@@ -43,6 +44,10 @@ public class IncidentFixOrchestratorPolicy {
         if (needsMapStage(memory.getOpsEvidence(), task, OpsDiagnosisEngineeringSkill.SKILL_ID)) {
             return IncidentFixOrchestratorDecision.call(OpsDiagnosisEngineeringSkill.SKILL_ID,
                     "线上告警修复任务需要先形成运维证据，供后续代码定位和修复 Agent 使用。");
+        }
+        if (needsAgentLoopInvestigation(task, memory)) {
+            return IncidentFixOrchestratorDecision.call(AgentLoopEngineeringSkill.SKILL_ID,
+                    "已有运维证据，先通过模型驱动工具循环做一次只读仓库调查，为后续代码定位和修复策略提供上下文。");
         }
         if (needsMapStage(memory.getCodeLocalization(), task, RepoUnderstandingSkill.SKILL_ID)) {
             return IncidentFixOrchestratorDecision.call(RepoUnderstandingSkill.SKILL_ID,
@@ -94,6 +99,10 @@ public class IncidentFixOrchestratorPolicy {
     }
 
     private IncidentFixOrchestratorDecision decideIssueToPatch(EngineeringTaskEntity task, IncidentFixWorkingMemory memory) {
+        if (needsAgentLoopInvestigation(task, memory)) {
+            return IncidentFixOrchestratorDecision.call(AgentLoopEngineeringSkill.SKILL_ID,
+                    "需求到修复任务先通过模型驱动工具循环做只读仓库调查，定位候选代码和测试文件。");
+        }
         if (needsMapStage(memory.getCodeLocalization(), task, RepoUnderstandingSkill.SKILL_ID)) {
             return IncidentFixOrchestratorDecision.call(RepoUnderstandingSkill.SKILL_ID,
                     "需求到修复任务需要先理解仓库和候选代码位置。");
@@ -114,6 +123,10 @@ public class IncidentFixOrchestratorPolicy {
     }
 
     private IncidentFixOrchestratorDecision decideReleaseRisk(EngineeringTaskEntity task, IncidentFixWorkingMemory memory) {
+        if (needsAgentLoopInvestigation(task, memory)) {
+            return IncidentFixOrchestratorDecision.call(AgentLoopEngineeringSkill.SKILL_ID,
+                    "发布风险评估先通过模型驱动工具循环做只读仓库调查，补充变更相关代码和测试上下文。");
+        }
         if (needsMapStage(memory.getCodeLocalization(), task, RepoUnderstandingSkill.SKILL_ID)) {
             return IncidentFixOrchestratorDecision.call(RepoUnderstandingSkill.SKILL_ID,
                     "发布风险评估需要先理解变更涉及的代码区域。");
@@ -134,6 +147,10 @@ public class IncidentFixOrchestratorPolicy {
     }
 
     private IncidentFixOrchestratorDecision decideCodeReview(EngineeringTaskEntity task, IncidentFixWorkingMemory memory) {
+        if (needsAgentLoopInvestigation(task, memory)) {
+            return IncidentFixOrchestratorDecision.call(AgentLoopEngineeringSkill.SKILL_ID,
+                    "代码审查任务先通过模型驱动工具循环做只读仓库调查，补充候选文件、测试和风险上下文。");
+        }
         if (needsMapStage(memory.getCodeLocalization(), task, RepoUnderstandingSkill.SKILL_ID)) {
             return IncidentFixOrchestratorDecision.call(RepoUnderstandingSkill.SKILL_ID,
                     "代码审查任务需要先理解变更和仓库上下文。");
@@ -155,6 +172,19 @@ public class IncidentFixOrchestratorPolicy {
 
     private boolean needsMapStage(Map<String, Object> value, EngineeringTaskEntity task, String skillId) {
         return isEmpty(value) && !hasExecuted(task, skillId);
+    }
+
+    private boolean needsAgentLoopInvestigation(EngineeringTaskEntity task, IncidentFixWorkingMemory memory) {
+        if (hasExecuted(task, AgentLoopEngineeringSkill.SKILL_ID)) {
+            return false;
+        }
+        if (Boolean.FALSE.equals(contextValue(task, "agentLoopInvestigationEnabled"))) {
+            return false;
+        }
+        if ("INCIDENT_TO_FIX".equals(task.getTaskType())) {
+            return memory != null && !isEmpty(memory.getOpsEvidence()) && isEmpty(memory.getCodeLocalization());
+        }
+        return isEmpty(memory == null ? null : memory.getCodeLocalization());
     }
 
     private boolean isEmpty(Map<String, Object> value) {

@@ -103,6 +103,13 @@ public class IncidentFixWorkingMemory {
                 codeLocalization = output;
                 fixStrategy = extractFixStrategy(output);
             }
+            case "agent_loop_investigation" -> {
+                codeLocalization = merge(codeLocalization, output);
+                if (finalReview == null) {
+                    finalReview = new LinkedHashMap<>();
+                }
+                finalReview.put("agentLoopInvestigation", output);
+            }
             case "engineering_knowledge_rag" -> engineeringKnowledge = output;
             case "fix_strategy_router" -> fixStrategy = output;
             case "bug_fix" -> {
@@ -134,6 +141,17 @@ public class IncidentFixWorkingMemory {
         putIfPresent(rootCause, "reasoning", output.get("reasoning"));
         putIfPresent(rootCause, "targetFiles", output.get("targetFiles"));
         return rootCause;
+    }
+
+    private Map<String, Object> merge(Map<String, Object> current, Map<String, Object> output) {
+        Map<String, Object> merged = new LinkedHashMap<>();
+        if (current != null) {
+            merged.putAll(current);
+        }
+        if (output != null) {
+            merged.putAll(output);
+        }
+        return merged;
     }
 
     private Map<String, Object> extractFixStrategy(Map<String, Object> output) {
