@@ -49,9 +49,10 @@ public class IncidentFixOrchestratorPolicy {
             return IncidentFixOrchestratorDecision.call(AgentLoopEngineeringSkill.SKILL_ID,
                     "已有运维证据，先通过模型驱动工具循环做一次只读仓库调查，为后续代码定位和修复策略提供上下文。");
         }
-        if (needsMapStage(memory.getCodeLocalization(), task, RepoUnderstandingSkill.SKILL_ID)) {
+        if (needsMapStage(memory.getCodeLocalization(), task, RepoUnderstandingSkill.SKILL_ID)
+                || needsRepoUnderstandingAfterAgentLoop(task, memory)) {
             return IncidentFixOrchestratorDecision.call(RepoUnderstandingSkill.SKILL_ID,
-                    "已有运维证据，下一步由 Incident Triage Agent 判断是否该改代码，并在需要时定位可疑文件和方法。");
+                    "Agent loop 调查结果仍需补强，下一步由 Incident Triage Agent 判断是否该改代码，并在需要时定位可疑文件和方法。");
         }
         if (!shouldEnterCodeRepair(task, memory)) {
             if (needsMapStage(memory.getReleaseRisk(), task, ReleaseRiskSkill.SKILL_ID)) {
@@ -103,9 +104,13 @@ public class IncidentFixOrchestratorPolicy {
             return IncidentFixOrchestratorDecision.call(AgentLoopEngineeringSkill.SKILL_ID,
                     "需求到修复任务先通过模型驱动工具循环做只读仓库调查，定位候选代码和测试文件。");
         }
-        if (needsMapStage(memory.getCodeLocalization(), task, RepoUnderstandingSkill.SKILL_ID)) {
+        if (needsMapStage(memory.getCodeLocalization(), task, RepoUnderstandingSkill.SKILL_ID)
+                || needsRepoUnderstandingAfterAgentLoop(task, memory)) {
             return IncidentFixOrchestratorDecision.call(RepoUnderstandingSkill.SKILL_ID,
-                    "需求到修复任务需要先理解仓库和候选代码位置。");
+                    "Agent loop 未形成足够稳定的候选代码位置，继续由仓库理解 Agent 补充定位。");
+        }
+        if (!shouldEnterCodeRepair(task, memory)) {
+            return IncidentFixOrchestratorDecision.stop("Agent loop / 代码定位判断当前不应进入自动代码修复，任务停止等待人工确认或补充证据。");
         }
         if (needsMapStage(memory.getEngineeringKnowledge(), task, EngineeringKnowledgeRagSkill.SKILL_ID)) {
             return IncidentFixOrchestratorDecision.call(EngineeringKnowledgeRagSkill.SKILL_ID,
@@ -119,7 +124,11 @@ public class IncidentFixOrchestratorPolicy {
             return IncidentFixOrchestratorDecision.call(TestVerificationSkill.SKILL_ID,
                     "已有修复产物，下一步生成并执行测试验证计划。");
         }
-        return IncidentFixOrchestratorDecision.stop("Issue-to-Patch 的代码定位、知识补充、修复和测试阶段均已完成或已尝试。");
+        if (needsMapStage(memory.getReleaseRisk(), task, ReleaseRiskSkill.SKILL_ID)) {
+            return IncidentFixOrchestratorDecision.call(ReleaseRiskSkill.SKILL_ID,
+                    "已有修复和测试上下文，最后评估发布风险、回归重点和人工确认点。");
+        }
+        return IncidentFixOrchestratorDecision.stop("Issue-to-Patch 的代码定位、知识补充、修复、测试和发布风险阶段均已完成或已尝试。");
     }
 
     private IncidentFixOrchestratorDecision decideReleaseRisk(EngineeringTaskEntity task, IncidentFixWorkingMemory memory) {
@@ -127,9 +136,10 @@ public class IncidentFixOrchestratorPolicy {
             return IncidentFixOrchestratorDecision.call(AgentLoopEngineeringSkill.SKILL_ID,
                     "发布风险评估先通过模型驱动工具循环做只读仓库调查，补充变更相关代码和测试上下文。");
         }
-        if (needsMapStage(memory.getCodeLocalization(), task, RepoUnderstandingSkill.SKILL_ID)) {
+        if (needsMapStage(memory.getCodeLocalization(), task, RepoUnderstandingSkill.SKILL_ID)
+                || needsRepoUnderstandingAfterAgentLoop(task, memory)) {
             return IncidentFixOrchestratorDecision.call(RepoUnderstandingSkill.SKILL_ID,
-                    "发布风险评估需要先理解变更涉及的代码区域。");
+                    "Agent loop 调查结果还不足以支撑发布风险判断，继续补充变更涉及的代码区域。");
         }
         if (needsMapStage(memory.getEngineeringKnowledge(), task, EngineeringKnowledgeRagSkill.SKILL_ID)) {
             return IncidentFixOrchestratorDecision.call(EngineeringKnowledgeRagSkill.SKILL_ID,
@@ -151,9 +161,10 @@ public class IncidentFixOrchestratorPolicy {
             return IncidentFixOrchestratorDecision.call(AgentLoopEngineeringSkill.SKILL_ID,
                     "代码审查任务先通过模型驱动工具循环做只读仓库调查，补充候选文件、测试和风险上下文。");
         }
-        if (needsMapStage(memory.getCodeLocalization(), task, RepoUnderstandingSkill.SKILL_ID)) {
+        if (needsMapStage(memory.getCodeLocalization(), task, RepoUnderstandingSkill.SKILL_ID)
+                || needsRepoUnderstandingAfterAgentLoop(task, memory)) {
             return IncidentFixOrchestratorDecision.call(RepoUnderstandingSkill.SKILL_ID,
-                    "代码审查任务需要先理解变更和仓库上下文。");
+                    "Agent loop 调查结果还不足以支撑代码审查，继续补充变更和仓库上下文。");
         }
         if (needsMapStage(memory.getEngineeringKnowledge(), task, EngineeringKnowledgeRagSkill.SKILL_ID)) {
             return IncidentFixOrchestratorDecision.call(EngineeringKnowledgeRagSkill.SKILL_ID,
@@ -187,6 +198,16 @@ public class IncidentFixOrchestratorPolicy {
         return isEmpty(memory == null ? null : memory.getCodeLocalization());
     }
 
+    private boolean needsRepoUnderstandingAfterAgentLoop(EngineeringTaskEntity task, IncidentFixWorkingMemory memory) {
+        if (!hasExecuted(task, AgentLoopEngineeringSkill.SKILL_ID) || hasExecuted(task, RepoUnderstandingSkill.SKILL_ID)) {
+            return false;
+        }
+        if (memory == null || isEmpty(memory.getCodeLocalization())) {
+            return false;
+        }
+        return hasLowLocalizationConfidence(memory) || isEmptyListValue(memory.getCodeLocalization().get("targetFiles"));
+    }
+
     private boolean isEmpty(Map<String, Object> value) {
         return value == null || value.isEmpty();
     }
@@ -201,6 +222,11 @@ public class IncidentFixOrchestratorPolicy {
         if (hasIncidentCodeEvidence(memory)) {
             return true;
         }
+        if (memory != null && hasExecuted(task, AgentLoopEngineeringSkill.SKILL_ID)
+                && hasLowLocalizationConfidence(memory)
+                && isEmptyListValue(memory.getCodeLocalization().get("targetFiles"))) {
+            return false;
+        }
         Map<String, Object> strategy = memory.getFixStrategy();
         if (strategy == null || strategy.isEmpty()) {
             return true;
@@ -210,6 +236,24 @@ public class IncidentFixOrchestratorPolicy {
             return bool;
         }
         return "true".equalsIgnoreCase(String.valueOf(value));
+    }
+
+    private boolean hasLowLocalizationConfidence(IncidentFixWorkingMemory memory) {
+        if (memory == null || memory.getCodeLocalization() == null) {
+            return false;
+        }
+        Object value = memory.getCodeLocalization().get("localizationConfidence");
+        return "LOW".equalsIgnoreCase(String.valueOf(value));
+    }
+
+    private boolean isEmptyListValue(Object value) {
+        if (value == null) {
+            return true;
+        }
+        if (value instanceof List<?> list) {
+            return list.isEmpty();
+        }
+        return String.valueOf(value).isBlank();
     }
 
     @SuppressWarnings("unchecked")

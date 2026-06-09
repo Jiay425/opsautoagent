@@ -1192,7 +1192,7 @@ public class BugFixSkill implements EngineeringSkill {
         if (!(skillOutputs instanceof Map<?, ?> outputs)) {
             return List.of();
         }
-        Object repoOutput = outputs.get("repo_understanding");
+        Object repoOutput = localizationOutput(outputs);
         if (!(repoOutput instanceof Map<?, ?> repoMap)) {
             return List.of();
         }
@@ -1212,7 +1212,7 @@ public class BugFixSkill implements EngineeringSkill {
         if (!(skillOutputs instanceof Map<?, ?> outputs)) {
             return List.of();
         }
-        Object repoOutput = outputs.get("repo_understanding");
+        Object repoOutput = localizationOutput(outputs);
         if (!(repoOutput instanceof Map<?, ?> repoMap)) {
             return List.of();
         }
@@ -1237,7 +1237,7 @@ public class BugFixSkill implements EngineeringSkill {
         if (!(skillOutputs instanceof Map<?, ?> outputs)) {
             return List.of();
         }
-        Object repoOutput = outputs.get("repo_understanding");
+        Object repoOutput = localizationOutput(outputs);
         if (!(repoOutput instanceof Map<?, ?> repoMap)) {
             return List.of();
         }
@@ -2098,7 +2098,7 @@ public class BugFixSkill implements EngineeringSkill {
         if (!(skillOutputs instanceof Map<?, ?> outputs)) {
             return null;
         }
-        Object repoOutput = outputs.get("repo_understanding");
+        Object repoOutput = localizationOutput(outputs);
         if (!(repoOutput instanceof Map<?, ?> repoMap)) {
             return null;
         }
@@ -2128,7 +2128,30 @@ public class BugFixSkill implements EngineeringSkill {
             map.forEach((k, v) -> result.put(String.valueOf(k), v));
             return result;
         }
+        Object agentLoop = outputs.get(AgentLoopEngineeringSkill.SKILL_ID);
+        if (agentLoop instanceof Map<?, ?> map) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            putIfPresent(result, "strategyType", map.get("strategyType"));
+            putIfPresent(result, "shouldEnterCodeRepair", map.get("shouldEnterCodeRepair"));
+            putIfPresent(result, "confidence", map.get("localizationConfidence"));
+            putIfPresent(result, "reasoning", map.get("finalAnswer"));
+            return result;
+        }
         return null;
+    }
+
+    private Object localizationOutput(Map<?, ?> outputs) {
+        Object repoOutput = outputs.get(RepoUnderstandingSkill.SKILL_ID);
+        if (repoOutput instanceof Map<?, ?>) {
+            return repoOutput;
+        }
+        return outputs.get(AgentLoopEngineeringSkill.SKILL_ID);
+    }
+
+    private void putIfPresent(Map<String, Object> target, String key, Object value) {
+        if (value != null) {
+            target.put(key, value);
+        }
     }
 
     private record Location(String filePath, int line) {

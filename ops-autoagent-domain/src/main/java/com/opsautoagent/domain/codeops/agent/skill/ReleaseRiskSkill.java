@@ -76,7 +76,7 @@ public class ReleaseRiskSkill implements EngineeringSkill {
                 .relatedTestFiles(safeList(diffContext.getRelatedTestFiles()))
                 .opsEvidence(skillOutput(task, OpsDiagnosisEngineeringSkill.SKILL_ID))
                 .fixStrategy(fixStrategy(task))
-                .codeLocalization(skillOutput(task, RepoUnderstandingSkill.SKILL_ID))
+                .codeLocalization(codeLocalizationOutput(task))
                 .patchGeneration(skillOutput(task, BugFixSkill.SKILL_ID))
                 .testVerification(skillOutput(task, TestVerificationSkill.SKILL_ID))
                 .reflectionFailures(extractReflectionFailures(task))
@@ -143,7 +143,7 @@ public class ReleaseRiskSkill implements EngineeringSkill {
         if (!routerOutput.isEmpty()) {
             return routerOutput;
         }
-        Map<String, Object> triageOutput = skillOutput(task, RepoUnderstandingSkill.SKILL_ID);
+        Map<String, Object> triageOutput = codeLocalizationOutput(task);
         if (triageOutput.isEmpty()) {
             return Map.of();
         }
@@ -154,6 +154,14 @@ public class ReleaseRiskSkill implements EngineeringSkill {
         putIfPresent(strategy, "reasoning", triageOutput.get("localizationReasoning"));
         putIfPresent(strategy, "missingEvidence", triageOutput.get("missingEvidence"));
         return strategy;
+    }
+
+    private Map<String, Object> codeLocalizationOutput(EngineeringTaskEntity task) {
+        Map<String, Object> repoOutput = skillOutput(task, RepoUnderstandingSkill.SKILL_ID);
+        if (!repoOutput.isEmpty()) {
+            return repoOutput;
+        }
+        return skillOutput(task, AgentLoopEngineeringSkill.SKILL_ID);
     }
 
     private void putIfPresent(Map<String, Object> target, String key, Object value) {

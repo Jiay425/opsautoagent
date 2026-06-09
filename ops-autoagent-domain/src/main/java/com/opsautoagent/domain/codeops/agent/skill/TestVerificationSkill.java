@@ -86,7 +86,7 @@ public class TestVerificationSkill implements EngineeringSkill {
     @Override
     public EngineeringSkillResultEntity execute(EngineeringTaskEntity task) {
         RepoDiffContextEntity diffContext = toolGateway.loadDiffContext(task.getRepository(), task.getChangeRef(), task.getContext());
-        Map<String, Object> codeLocalization = skillOutput(task, RepoUnderstandingSkill.SKILL_ID);
+        Map<String, Object> codeLocalization = codeLocalizationOutput(task);
         Map<String, Object> patchGeneration = skillOutput(task, BugFixSkill.SKILL_ID);
         String verificationRepositoryPath = firstNonBlank(
                 objectString(patchGeneration.get("sandboxRepositoryPath")),
@@ -98,8 +98,8 @@ public class TestVerificationSkill implements EngineeringSkill {
                 .changeRef(value(diffContext.getChangeRef(), "working_tree"))
                 .changedFiles(list(diffContext.getChangedFiles()))
                 .relatedTestFiles(relatedTestFiles)
-                .recommendedTests(buildRecommendedTests(diffContext, relatedTestFiles))
-                .coverageGaps(buildCoverageGaps(diffContext, relatedTestFiles))
+                .recommendedTests(buildRecommendedTests(diffContext, relatedTestFiles, codeLocalization))
+                .coverageGaps(buildCoverageGaps(diffContext, relatedTestFiles, codeLocalization))
                 .mavenCommands(buildMavenCommands(relatedTestFiles))
                 .verificationNotes(buildVerificationNotes(task, diffContext))
                 .testExecutionResults(List.of())
@@ -268,6 +268,14 @@ public class TestVerificationSkill implements EngineeringSkill {
         Map<String, Object> values = new LinkedHashMap<>();
         outputMap.forEach((key, value) -> values.put(String.valueOf(key), value));
         return values;
+    }
+
+    private Map<String, Object> codeLocalizationOutput(EngineeringTaskEntity task) {
+        Map<String, Object> repoOutput = skillOutput(task, RepoUnderstandingSkill.SKILL_ID);
+        if (!repoOutput.isEmpty()) {
+            return repoOutput;
+        }
+        return skillOutput(task, AgentLoopEngineeringSkill.SKILL_ID);
     }
 
     private TestVerificationPlanEntity mergedRepairTestPlan(TestVerificationPlanEntity baselinePlan,
@@ -592,8 +600,15 @@ public class TestVerificationSkill implements EngineeringSkill {
         return false;
     }
 
-    private List<String> buildRecommendedTests(RepoDiffContextEntity diffContext, List<String> relatedTestFiles) {
-        List<String> tests = new ArrayList<>();
+    private List<String> buildRecommendedTests(RepoDiffContextEntity diffContext,
+                                               List<String> relatedTestFiles,
+                                               Map<String, Object> codeLocalization) {
+        Set<String> tests = new LinkedHashSet<>();
+        for (String test : stringList(codeLocalization.get("recommendedTests"))) {
+            if (!isBlank(test)) {
+                tests.add(test);
+            }
+        }
         for (String testFile : list(relatedTestFiles)) {
             tests.add(testFile + "：直接相关回归测试");
         }
@@ -604,10 +619,19 @@ public class TestVerificationSkill implements EngineeringSkill {
                 }
             }
         }
-        return tests.isEmpty() ? List.of("当前没有 Java 变更或相关测试，建议先运行编译验证。") : tests;
+        if (tests.isEmpty()) {
+            for (String file : stringList(codeLocalization.get("targetFiles"))) {
+                if (file.endsWith(".java") && !file.contains("/src/test/") && !file.contains("\\src\\test\\")) {
+                    tests.add(file + "：来自 agent loop 代码定位，建议新增或运行同名 Test/Tests 覆盖核心分支。");
+                }
+            }
+        }
+        return tests.isEmpty() ? List.of("当前没有 Java 变更或相关测试，建议先运行编译验证。") : new ArrayList<>(tests);
     }
 
-    private List<String> buildCoverageGaps(RepoDiffContextEntity diffContext, List<String> relatedTestFiles) {
+    private List<String> buildCoverageGaps(RepoDiffContextEntity diffContext,
+                                           List<String> relatedTestFiles,
+                                           Map<String, Object> codeLocalization) {
         List<String> gaps = new ArrayList<>();
         List<String> relatedTests = list(relatedTestFiles);
         for (String file : list(diffContext.getChangedFiles())) {
@@ -622,6 +646,13 @@ public class TestVerificationSkill implements EngineeringSkill {
             }
             if (file.toLowerCase().contains("repository") || file.toLowerCase().contains("mapper")) {
                 gaps.add(file + " 建议覆盖 SQL 条件、空结果和边界分页。");
+            }
+        }
+        if (gaps.isEmpty() && relatedTests.isEmpty()) {
+            for (String file : stringList(codeLocalization.get("targetFiles"))) {
+                if (file.endsWith(".java") && !file.contains("/src/test/") && !file.contains("\\src\\test\\")) {
+                    gaps.add(file + " 来自 agent loop 定位，但未发现相关测试文件。");
+                }
             }
         }
         return gaps.isEmpty() ? List.of("暂未发现明显测试覆盖缺口，仍建议结合任务目标人工确认关键路径。") : gaps;

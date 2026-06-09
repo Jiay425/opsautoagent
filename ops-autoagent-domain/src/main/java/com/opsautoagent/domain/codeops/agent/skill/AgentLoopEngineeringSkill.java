@@ -123,9 +123,10 @@ public class AgentLoopEngineeringSkill implements EngineeringSkill {
         output.put("stopReason", result == null ? "" : result.getStopReason());
         output.put("turns", result == null ? 0 : result.getTurns());
         output.put("trace", result == null ? List.of() : result.getTrace());
-        output.put("targetFiles", extractJavaPaths(result));
+        List<String> targetFiles = extractJavaPaths(result);
+        output.put("targetFiles", targetFiles);
         output.put("recommendedTests", extractTestFiles(result));
-        output.put("shouldEnterCodeRepair", false);
+        output.put("shouldEnterCodeRepair", shouldEnterCodeRepair(result, targetFiles));
         output.put("strategyType", "READ_ONLY_INVESTIGATION");
         output.put("localizationConfidence", result != null && result.isSuccess() ? "MEDIUM" : "LOW");
         return output;
@@ -172,6 +173,19 @@ public class AgentLoopEngineeringSkill implements EngineeringSkill {
                 .distinct()
                 .limit(20)
                 .toList();
+    }
+
+    private boolean shouldEnterCodeRepair(AgentLoopResult result, List<String> targetFiles) {
+        if (result == null || !result.isSuccess() || targetFiles == null || targetFiles.isEmpty()) {
+            return false;
+        }
+        String text = value(result.getFinalAnswer(), "").toLowerCase();
+        if (text.contains("no code fix") || text.contains("do not modify code")
+                || text.contains("configuration issue") || text.contains("runtime issue")
+                || text.contains("capacity issue")) {
+            return false;
+        }
+        return true;
     }
 
     private void collectJavaPaths(List<String> values, String text) {

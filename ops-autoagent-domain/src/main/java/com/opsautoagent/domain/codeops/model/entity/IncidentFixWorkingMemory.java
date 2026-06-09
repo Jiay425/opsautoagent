@@ -105,6 +105,7 @@ public class IncidentFixWorkingMemory {
             }
             case "agent_loop_investigation" -> {
                 codeLocalization = merge(codeLocalization, output);
+                fixStrategy = merge(fixStrategy, extractFixStrategy(output));
                 if (finalReview == null) {
                     finalReview = new LinkedHashMap<>();
                 }
