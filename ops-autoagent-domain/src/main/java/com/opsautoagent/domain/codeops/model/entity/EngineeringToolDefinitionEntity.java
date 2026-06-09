@@ -5,6 +5,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.Map;
+
 @Data
 @Builder
 @AllArgsConstructor
@@ -26,5 +28,7 @@ public class EngineeringToolDefinitionEntity {
     private Integer timeoutMillis;
 
     private Boolean enabled;
+
+    private Map<String, Object> argumentSchema;
 
 }

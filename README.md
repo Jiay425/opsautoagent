@@ -54,6 +54,18 @@ The latest verification runs are written locally under `data/real-chain-runs/` a
 
 **Eval Harness (Phase 4)** — 7 built-in cases, JSON + Markdown auto-reports, 6 metrics, report API.
 
+**Agent Loop Harness (Phase 5)** — Claude Code-style model-driven loop for CodeOps debugging. The model sees a typed tool catalog, emits JSON tool calls, `ToolPermissionGate` enforces policy, `EngineeringToolRegistry` dispatches allowed tools, and compact trace items are returned by default. A `dryRun` mock model verifies the loop locally without sending repository data to an external LLM.
+
+| Component | Responsibility |
+|-----------|----------------|
+| `AgentLoopService` | Turn loop: model decision → permission gate → tool execution → next turn/final answer |
+| `CodeOpsAgentLoopModelClient` | OpenAI-compatible LLM adapter; parses JSON decisions and tolerates common field aliases |
+| `EngineeringToolRegistry` | Central tool catalog, argument schema, handler dispatch |
+| `ToolPermissionGate` | Unknown/disabled/tool-scope/command/write/high-risk approval checks |
+| `MockCodeOpsAgentLoopModelClient` | Local dry-run client for no-network loop verification |
+
+Registered tools currently include `repo.create_snapshot`, `repo.search_text`, `repo.read_file_snippet`, `repo.git_diff`, and `repo.maven`. The snippet tool accepts both `centerLine/radius` and `startLine/endLine` argument styles.
+
 ### Eval Cases
 
 | Case | scopeType | Description |
@@ -73,6 +85,8 @@ ops-autoagent-app/          Spring Boot entry point
 ops-autoagent-domain/       Core agent logic
   ├── agent/bugfix/         Code Repair Agent
   ├── agent/eval/           Evaluation engine + report builder
+  ├── agent/loop/           Model-driven agent loop + compact trace
+  ├── agent/tool/           Tool registry, permission gate, tool runtime audit
   ├── agent/orchestrator/   IncidentFixOrchestratorPolicy
   ├── agent/patch/          PatchScopeGuard, PatchApply, PatchValidation
   ├── agent/skill/          7 engineering skills
@@ -93,8 +107,9 @@ mvn -q -DskipTests compile install
 
 $env:OPENAI_API_KEY = "your-api-key"
 $env:OPENAI_BASE_URL = "https://api.deepseek.com"
-$env:OPENAI_CHAT_MODEL = "deepseek-v4-flash"
-mvn -pl ops-autoagent-app spring-boot:run -Dspring-boot.run.profiles=full
+mvn -pl ops-autoagent-app spring-boot:run `
+  -Dspring-boot.run.profiles=full `
+  -Dspring-boot.run.arguments="--spring.ai.openai.chat.options.model=deepseek-v4-flash --codeops.agent.llm.compatible-client.path=/chat/completions"
 ```
 
 ### API
@@ -105,6 +120,21 @@ mvn -pl ops-autoagent-app spring-boot:run -Dspring-boot.run.profiles=full
 | POST | `/api/v1/codeops/evaluation/run/{caseId}` | Run single case |
 | GET | `/api/v1/codeops/evaluation/report` | Latest eval report |
 | GET | `/api/v1/codeops/task/{taskId}` | Task trace |
+| POST | `/api/v1/codeops/agent-loop/run` | Run model-driven tool loop; supports `dryRun` and `includeSteps` |
+
+Agent loop request example:
+
+```json
+{
+  "goal": "Search OrderService related code and summarize likely tests.",
+  "repository": "E:/DeskTop/java_project/ops-autoagent-diagnosis/samples/order-service",
+  "maxTurns": 5,
+  "dryRun": false,
+  "includeSteps": false
+}
+```
+
+The default response includes a compact `trace`. Set `includeSteps=true` only when full permission policy and tool output details are needed for debugging.
 
 ---
 
@@ -158,6 +188,18 @@ Alertmanager Webhook
 
 **Eval Harness 评测平台（Phase 4）** — 7 个内置 case，JSON + Markdown 报告自动生成，6 项指标，报告 API。
 
+**Agent Loop Harness（Phase 5）** — 类 Claude Code 的模型驱动循环。模型看到带参数 schema 的工具目录，输出 JSON tool calls；`ToolPermissionGate` 做权限前置校验；`EngineeringToolRegistry` 统一分发工具；接口默认返回轻量 trace。`dryRun` 使用本地 mock 模型验证闭环，不会把仓库内容发送到外部 LLM。
+
+| 组件 | 职责 |
+|------|------|
+| `AgentLoopService` | 回合循环：模型决策 → 权限 gate → 工具执行 → 下一轮/最终答案 |
+| `CodeOpsAgentLoopModelClient` | OpenAI-compatible LLM 适配器；解析 JSON 决策并兼容常见字段别名 |
+| `EngineeringToolRegistry` | 统一工具目录、参数 schema、handler 分发 |
+| `ToolPermissionGate` | 未知工具、禁用工具、技能约束、命令、写入、高风险审批检查 |
+| `MockCodeOpsAgentLoopModelClient` | 本地 dry-run 客户端，用于无网络闭环验证 |
+
+当前已注册工具包括 `repo.create_snapshot`、`repo.search_text`、`repo.read_file_snippet`、`repo.git_diff`、`repo.maven`。代码片段工具同时兼容 `centerLine/radius` 和 `startLine/endLine` 两种参数风格。
+
 ### 评测 Case
 
 | Case | scopeType | 描述 |
@@ -177,6 +219,8 @@ ops-autoagent-app/          Spring Boot 启动入口
 ops-autoagent-domain/       核心 Agent 逻辑
   ├── agent/bugfix/         代码修复 Agent
   ├── agent/eval/           评测引擎 + 报告生成器
+  ├── agent/loop/           模型驱动 agent loop + 轻量 trace
+  ├── agent/tool/           工具注册表、权限 gate、工具运行审计
   ├── agent/orchestrator/   事故修复编排策略
   ├── agent/patch/          PatchScopeGuard + 补丁应用 + 校验
   ├── agent/skill/          7 个工程技能
@@ -197,8 +241,9 @@ mvn -q -DskipTests compile install
 
 $env:OPENAI_API_KEY = "your-api-key"
 $env:OPENAI_BASE_URL = "https://api.deepseek.com"
-$env:OPENAI_CHAT_MODEL = "deepseek-v4-flash"
-mvn -pl ops-autoagent-app spring-boot:run -Dspring-boot.run.profiles=full
+mvn -pl ops-autoagent-app spring-boot:run `
+  -Dspring-boot.run.profiles=full `
+  -Dspring-boot.run.arguments="--spring.ai.openai.chat.options.model=deepseek-v4-flash --codeops.agent.llm.compatible-client.path=/chat/completions"
 ```
 
 ### API
@@ -209,6 +254,21 @@ mvn -pl ops-autoagent-app spring-boot:run -Dspring-boot.run.profiles=full
 | POST | `/api/v1/codeops/evaluation/run/{caseId}` | 运行单个 case |
 | GET | `/api/v1/codeops/evaluation/report` | 获取最新评测报告 |
 | GET | `/api/v1/codeops/task/{taskId}` | 获取任务 trace |
+| POST | `/api/v1/codeops/agent-loop/run` | 运行模型驱动工具循环；支持 `dryRun` 和 `includeSteps` |
+
+Agent loop 请求示例：
+
+```json
+{
+  "goal": "搜索 OrderService 相关代码，并总结可能的测试文件。",
+  "repository": "E:/DeskTop/java_project/ops-autoagent-diagnosis/samples/order-service",
+  "maxTurns": 5,
+  "dryRun": false,
+  "includeSteps": false
+}
+```
+
+默认响应只返回轻量 `trace`。只有调试完整权限策略和工具输出时，才建议设置 `includeSteps=true`。
 
 ---
 
