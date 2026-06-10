@@ -5,6 +5,7 @@ import com.opsautoagent.domain.codeops.agent.loop.AgentLoopModelClient;
 import com.opsautoagent.domain.codeops.agent.loop.AgentLoopRequest;
 import com.opsautoagent.domain.codeops.agent.loop.AgentLoopStep;
 import com.opsautoagent.domain.codeops.agent.loop.AgentLoopToolCall;
+import com.alibaba.fastjson.JSONObject;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
@@ -30,11 +31,22 @@ public class MockCodeOpsAgentLoopModelClient implements AgentLoopModelClient {
         return AgentLoopDecision.builder()
                 .thoughtSummary("Dry-run second turn: summarize the observed tool result.")
                 .toolCalls(List.of())
-                .finalAnswer("Dry-run agent loop completed. Last tool="
-                        + lastStep.getToolName()
-                        + ", status=" + (lastStep.getToolResult() == null ? "" : lastStep.getToolResult().getStatus())
-                        + ", summary=" + (lastStep.getToolResult() == null ? "" : lastStep.getToolResult().getSummary()))
+                .finalAnswer(finalAnswer(lastStep))
                 .build();
+    }
+
+    private String finalAnswer(AgentLoopStep lastStep) {
+        JSONObject json = new JSONObject(true);
+        json.put("summary", "Dry-run agent loop completed. Last tool="
+                + lastStep.getToolName()
+                + ", status=" + (lastStep.getToolResult() == null ? "" : lastStep.getToolResult().getStatus())
+                + ", summary=" + (lastStep.getToolResult() == null ? "" : lastStep.getToolResult().getSummary()));
+        json.put("targetFiles", List.of("src/main/java/com/example/order/OrderServiceApplication.java"));
+        json.put("recommendedTests", List.of("src/test/java/com/example/order/OrderServiceApplicationTests.java"));
+        json.put("shouldEnterCodeRepair", true);
+        json.put("localizationConfidence", "MEDIUM");
+        json.put("missingEvidence", List.of("dry-run uses a deterministic mock summary instead of model reasoning"));
+        return json.toJSONString();
     }
 
     private Map<String, Object> searchArguments(AgentLoopRequest request) {

@@ -1,5 +1,7 @@
 package com.opsautoagent.domain.codeops.agent.skill;
 
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONObject;
 import com.opsautoagent.domain.codeops.agent.llm.CodeOpsAgentLoopModelClient;
 import com.opsautoagent.domain.codeops.agent.llm.MockCodeOpsAgentLoopModelClient;
 import com.opsautoagent.domain.codeops.agent.loop.AgentLoopModelClient;
@@ -115,21 +117,47 @@ public class AgentLoopEngineeringSkill implements EngineeringSkill {
     }
 
     private Map<String, Object> buildRawOutput(AgentLoopResult result) {
+        Map<String, Object> structured = parseStructuredFinalAnswer(result == null ? "" : result.getFinalAnswer());
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("phase", "PHASE_AGENT_LOOP_INVESTIGATION");
         output.put("status", result == null ? "FAILED" : result.getStatus());
-        output.put("summary", result == null ? "" : result.getFinalAnswer());
+        output.put("summary", value(stringValue(structured.get("summary")), result == null ? "" : result.getFinalAnswer()));
         output.put("finalAnswer", result == null ? "" : result.getFinalAnswer());
+        output.put("structuredFinalAnswer", structured);
         output.put("stopReason", result == null ? "" : result.getStopReason());
         output.put("turns", result == null ? 0 : result.getTurns());
         output.put("trace", result == null ? List.of() : result.getTrace());
-        List<String> targetFiles = extractJavaPaths(result);
+        List<String> targetFiles = listValue(structured.get("targetFiles"));
+        if (targetFiles.isEmpty()) {
+            targetFiles = extractJavaPaths(result);
+        }
         output.put("targetFiles", targetFiles);
-        output.put("recommendedTests", extractTestFiles(result));
-        output.put("shouldEnterCodeRepair", shouldEnterCodeRepair(result, targetFiles));
+        List<String> recommendedTests = listValue(structured.get("recommendedTests"));
+        if (recommendedTests.isEmpty()) {
+            recommendedTests = extractTestFiles(result);
+        }
+        output.put("recommendedTests", recommendedTests);
+        output.put("shouldEnterCodeRepair", booleanValue(structured.get("shouldEnterCodeRepair"),
+                shouldEnterCodeRepair(result, targetFiles)));
         output.put("strategyType", "READ_ONLY_INVESTIGATION");
-        output.put("localizationConfidence", result != null && result.isSuccess() ? "MEDIUM" : "LOW");
+        output.put("localizationConfidence", value(stringValue(structured.get("localizationConfidence")),
+                result != null && result.isSuccess() ? "MEDIUM" : "LOW"));
+        output.put("missingEvidence", listValue(structured.get("missingEvidence")));
         return output;
+    }
+
+    private Map<String, Object> parseStructuredFinalAnswer(String finalAnswer) {
+        if (finalAnswer == null || finalAnswer.isBlank()) {
+            return Map.of();
+        }
+        try {
+            JSONObject object = JSON.parseObject(extractJson(finalAnswer));
+            Map<String, Object> result = new LinkedHashMap<>();
+            object.forEach(result::put);
+            return result;
+        } catch (Exception ignored) {
+            return Map.of();
+        }
     }
 
     private List<String> buildEvidence(AgentLoopResult result) {
@@ -196,6 +224,46 @@ public class AgentLoopEngineeringSkill implements EngineeringSkill {
         while (matcher.find()) {
             values.add(matcher.group(1).replace('\\', '/'));
         }
+    }
+
+    private List<String> listValue(Object value) {
+        if (value instanceof List<?> list) {
+            return list.stream()
+                    .map(String::valueOf)
+                    .filter(item -> !item.isBlank())
+                    .distinct()
+                    .limit(20)
+                    .toList();
+        }
+        return List.of();
+    }
+
+    private boolean booleanValue(Object value, boolean defaultValue) {
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value == null) {
+            return defaultValue;
+        }
+        return "true".equalsIgnoreCase(String.valueOf(value));
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private String extractJson(String value) {
+        String trimmed = value == null ? "" : value.trim();
+        if (trimmed.startsWith("```")) {
+            trimmed = trimmed.replaceFirst("^```(?:json)?\\s*", "");
+            trimmed = trimmed.replaceFirst("\\s*```$", "");
+        }
+        int start = trimmed.indexOf('{');
+        int end = trimmed.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            return trimmed.substring(start, end + 1);
+        }
+        return trimmed;
     }
 
     private String value(String value, String defaultValue) {

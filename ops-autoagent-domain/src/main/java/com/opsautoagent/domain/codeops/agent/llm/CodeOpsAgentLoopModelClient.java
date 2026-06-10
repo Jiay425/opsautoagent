@@ -51,6 +51,15 @@ public class CodeOpsAgentLoopModelClient implements AgentLoopModelClient {
         payload.put("repository", request == null || request.getTask() == null ? "" : request.getTask().getRepository());
         payload.put("changeRef", request == null || request.getTask() == null ? "" : request.getTask().getChangeRef());
         payload.put("focusAreas", request == null || request.getTask() == null ? List.of() : request.getTask().getFocusAreas());
+        int maxTurns = request == null ? 0 : request.getMaxTurns();
+        int completedTurns = previousSteps == null ? 0 : previousSteps.stream()
+                .map(AgentLoopStep::getTurnNo)
+                .distinct()
+                .toList()
+                .size();
+        payload.put("maxTurns", maxTurns);
+        payload.put("completedTurns", completedTurns);
+        payload.put("remainingTurns", Math.max(0, maxTurns - completedTurns));
         payload.put("availableTools", toolRegistry.listTools().stream().map(this::toolToMap).toList());
         payload.put("previousSteps", previousSteps == null ? List.of() : previousSteps.stream().map(this::stepToMap).toList());
 
@@ -63,6 +72,9 @@ public class CodeOpsAgentLoopModelClient implements AgentLoopModelClient {
                 - Prefer read-only repository tools before command execution.
                 - Keep tool arguments small and explicit.
                 - If enough evidence exists, set finalAnswer and leave toolCalls empty.
+                - If remainingTurns <= 1, do not call more tools. You must produce finalAnswer JSON from the evidence already collected.
+                - Do not call more than 3 tools in a single turn.
+                - finalAnswer must be a compact JSON object string, or a JSON object, using the schema below.
                 - Return JSON only, no markdown fences, no extra prose.
 
                 Required JSON schema:
@@ -79,6 +91,16 @@ public class CodeOpsAgentLoopModelClient implements AgentLoopModelClient {
                     }
                   ],
                   "finalAnswer": ""
+                }
+
+                Required finalAnswer JSON schema when no more tools are needed:
+                {
+                  "summary": "brief evidence-based conclusion",
+                  "targetFiles": ["src/main/java/..."],
+                  "recommendedTests": ["src/test/java/... or test recommendation"],
+                  "shouldEnterCodeRepair": true,
+                  "localizationConfidence": "HIGH|MEDIUM|LOW",
+                  "missingEvidence": ["remaining uncertainty"]
                 }
 
                 Runtime input:
@@ -118,7 +140,8 @@ public class CodeOpsAgentLoopModelClient implements AgentLoopModelClient {
             return AgentLoopDecision.builder()
                     .thoughtSummary(firstNonBlank(json.getString("thoughtSummary"), json.getString("thought_summary")))
                     .toolCalls(parseToolCalls(firstArray(json, "toolCalls", "tool_calls")))
-                    .finalAnswer(firstNonBlank(json.getString("finalAnswer"), json.getString("final_answer")))
+                    .finalAnswer(firstNonBlank(finalAnswerValue(json.get("finalAnswer")),
+                            finalAnswerValue(json.get("final_answer"))))
                     .build();
         } catch (Exception e) {
             log.warn("Parse agent loop decision failed. content={}", abbreviate(content, 1200), e);
@@ -155,6 +178,16 @@ public class CodeOpsAgentLoopModelClient implements AgentLoopModelClient {
                     .build());
         }
         return calls;
+    }
+
+    private String finalAnswerValue(Object value) {
+        if (value == null) {
+            return "";
+        }
+        if (value instanceof JSONObject object) {
+            return object.toJSONString();
+        }
+        return String.valueOf(value);
     }
 
     private Map<String, Object> toMap(JSONObject json) {
