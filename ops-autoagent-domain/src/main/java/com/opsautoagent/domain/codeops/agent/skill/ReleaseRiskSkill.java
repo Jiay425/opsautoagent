@@ -58,6 +58,8 @@ public class ReleaseRiskSkill implements EngineeringSkill {
     @Override
     public EngineeringSkillResultEntity execute(EngineeringTaskEntity task) {
         RepoDiffContextEntity diffContext = toolGateway.loadDiffContext(task.getRepository(), task.getChangeRef(), task.getContext());
+        Map<String, Object> patchGeneration = skillOutput(task, BugFixSkill.SKILL_ID);
+        Map<String, Object> testVerification = skillOutput(task, TestVerificationSkill.SKILL_ID);
         List<EngineeringKnowledgeMatchEntity> knowledgeMatches = knowledgeSearchService.search(
                 task,
                 safeList(diffContext.getChangedFiles()),
@@ -77,8 +79,8 @@ public class ReleaseRiskSkill implements EngineeringSkill {
                 .opsEvidence(skillOutput(task, OpsDiagnosisEngineeringSkill.SKILL_ID))
                 .fixStrategy(fixStrategy(task))
                 .codeLocalization(codeLocalizationOutput(task))
-                .patchGeneration(skillOutput(task, BugFixSkill.SKILL_ID))
-                .testVerification(skillOutput(task, TestVerificationSkill.SKILL_ID))
+                .patchGeneration(patchGeneration)
+                .testVerification(testVerification)
                 .reflectionFailures(extractReflectionFailures(task))
                 .knowledgeMatches(knowledgeMatches)
                 .baselineReport(baselineReport)
@@ -101,6 +103,10 @@ public class ReleaseRiskSkill implements EngineeringSkill {
         rawOutput.put("llmReleaseRiskFallback", agentOutput.isFallback());
         rawOutput.put("releaseRiskReasoning", agentOutput.getReasoning() == null ? List.of() : agentOutput.getReasoning());
         rawOutput.put("humanApprovalPoints", agentOutput.getHumanApprovalPoints() == null ? List.of() : agentOutput.getHumanApprovalPoints());
+        rawOutput.put("manualTakeoverRequired", manualTakeoverRequired(patchGeneration, testVerification));
+        rawOutput.put("autoPatchBlockedReason", autoPatchBlockedReason(patchGeneration));
+        rawOutput.put("verificationBlockedReason", verificationBlockedReason(testVerification));
+        rawOutput.put("blockedAutomationSummary", blockedAutomationSummary(patchGeneration, testVerification));
         rawOutput.put("modelRouting", agentOutput.getModelRouting() == null ? Map.of() : agentOutput.getModelRouting());
         rawOutput.put("llmReleaseRiskError", value(agentOutput.getErrorMessage()));
         return EngineeringSkillResultEntity.builder()
@@ -168,6 +174,77 @@ public class ReleaseRiskSkill implements EngineeringSkill {
         if (value != null) {
             target.put(key, value);
         }
+    }
+
+    private boolean manualTakeoverRequired(Map<String, Object> patchGeneration,
+                                           Map<String, Object> testVerification) {
+        return !autoPatchBlockedReason(patchGeneration).isBlank()
+                || !verificationBlockedReason(testVerification).isBlank();
+    }
+
+    private String autoPatchBlockedReason(Map<String, Object> patchGeneration) {
+        if (patchGeneration == null || patchGeneration.isEmpty()) {
+            return "";
+        }
+        Map<String, Object> patchScopeGuard = mapValue(patchGeneration.get("patchScopeGuard"));
+        if (!patchScopeGuard.isEmpty() && Boolean.FALSE.equals(patchScopeGuard.get("allowed"))) {
+            return "PatchScopeGuard blocked production patch: " + String.join("; ", stringList(patchScopeGuard.get("violations")));
+        }
+        Map<String, Object> patchApply = mapValue(patchGeneration.get("patchApply"));
+        if (!patchApply.isEmpty() && Boolean.FALSE.equals(patchApply.get("applied"))) {
+            return "Production patch was not applied: " + value(patchApply.get("errorMessage"));
+        }
+        Map<String, Object> patchValidation = mapValue(patchGeneration.get("patchValidation"));
+        if (!patchValidation.isEmpty() && Boolean.FALSE.equals(patchValidation.get("valid"))) {
+            return "Production patch validation failed: " + String.join("; ", stringList(patchValidation.get("errors")));
+        }
+        return "";
+    }
+
+    private String verificationBlockedReason(Map<String, Object> testVerification) {
+        if (testVerification == null || testVerification.isEmpty()) {
+            return "";
+        }
+        Object explicit = testVerification.get("verificationBlockedReason");
+        if (explicit != null && !String.valueOf(explicit).isBlank()) {
+            return String.valueOf(explicit);
+        }
+        List<String> skipped = stringList(testVerification.get("skippedMavenCommands"));
+        if (!skipped.isEmpty()) {
+            return "Some verification commands were skipped: " + String.join("; ", skipped);
+        }
+        String failureType = value(testVerification.get("testFailureType"));
+        if (!failureType.isBlank()) {
+            return "Verification failed with type=" + failureType;
+        }
+        return "";
+    }
+
+    private Map<String, Object> blockedAutomationSummary(Map<String, Object> patchGeneration,
+                                                         Map<String, Object> testVerification) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        String patchReason = autoPatchBlockedReason(patchGeneration);
+        String verificationReason = verificationBlockedReason(testVerification);
+        summary.put("manualTakeoverRequired", !patchReason.isBlank() || !verificationReason.isBlank());
+        putIfPresent(summary, "autoPatchBlockedReason", patchReason.isBlank() ? null : patchReason);
+        putIfPresent(summary, "verificationBlockedReason", verificationReason.isBlank() ? null : verificationReason);
+        return summary;
+    }
+
+    private Map<String, Object> mapValue(Object value) {
+        if (!(value instanceof Map<?, ?> map)) {
+            return Map.of();
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        map.forEach((key, item) -> result.put(String.valueOf(key), item));
+        return result;
+    }
+
+    private List<String> stringList(Object value) {
+        if (value instanceof List<?> list) {
+            return list.stream().map(String::valueOf).filter(item -> !item.isBlank()).toList();
+        }
+        return List.of();
     }
 
     private List<Object> extractReflectionFailures(EngineeringTaskEntity task) {

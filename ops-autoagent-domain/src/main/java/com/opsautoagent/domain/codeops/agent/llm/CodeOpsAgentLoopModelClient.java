@@ -41,8 +41,23 @@ public class CodeOpsAgentLoopModelClient implements AgentLoopModelClient {
                     .finalAnswer("Agent loop model client is unavailable: " + chatClient.unavailableReason())
                     .build();
         }
-        String content = chatClient.call(buildPrompt(request, previousSteps));
+        String prompt = buildPrompt(request, previousSteps);
+        String content = callWithSingleRetry(prompt);
         return parseDecision(content);
+    }
+
+    private String callWithSingleRetry(String prompt) {
+        try {
+            return chatClient.call(prompt);
+        } catch (RuntimeException first) {
+            log.warn("Agent loop model call failed once, retrying. error={}", first.getMessage());
+            try {
+                return chatClient.call(prompt);
+            } catch (RuntimeException second) {
+                second.addSuppressed(first);
+                throw second;
+            }
+        }
     }
 
     private String buildPrompt(AgentLoopRequest request, List<AgentLoopStep> previousSteps) {

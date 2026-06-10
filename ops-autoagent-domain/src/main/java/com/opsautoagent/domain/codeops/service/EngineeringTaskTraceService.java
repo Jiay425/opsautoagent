@@ -88,7 +88,9 @@ public class EngineeringTaskTraceService {
         putIfPresent(summary, "testVerification", compactMap(workingMemory.getTestVerification(),
                 "recommendedTests", "coverageGaps", "mavenCommands", "testExecutionResults"));
         putIfPresent(summary, "releaseRisk", compactMap(workingMemory.getReleaseRisk(),
-                "releaseRiskReport", "humanApprovalPoints", "releaseRiskReasoning"));
+                "releaseRiskReport", "humanApprovalPoints", "releaseRiskReasoning",
+                "manualTakeoverRequired", "autoPatchBlockedReason", "verificationBlockedReason",
+                "blockedAutomationSummary"));
         putIfPresent(summary, "agentTrace", workingMemory.getAgentTrace());
         putIfPresent(summary, "agentRuntimeTrace", task.getContext().get("agentRuntimeTrace"));
         putIfPresent(summary, "toolRuntimeTrace", task.getContext().get("toolRuntimeTrace"));
@@ -244,7 +246,9 @@ public class EngineeringTaskTraceService {
         artifacts.put("localization", pick(raw, "targetFiles", "targetMethods", "suspiciousLocations", "localizationConfidence", "missingEvidence"));
         artifacts.put("patch", pick(raw, "patchGenerated", "llmGenerated", "patchApply", "patchScopeGuard", "patchSandbox", "patchQuality", "compileGate", "changedFiles"));
         artifacts.put("tests", pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults", "testFailureType", "failedTestFiles", "failedAssertions"));
-        artifacts.put("releaseRisk", pick(raw, "releaseRiskReport", "riskPoints", "observationMetrics", "rollbackConcerns", "humanApprovalPoints"));
+        artifacts.put("releaseRisk", pick(raw, "releaseRiskReport", "riskPoints", "observationMetrics",
+                "rollbackConcerns", "humanApprovalPoints", "manualTakeoverRequired",
+                "autoPatchBlockedReason", "verificationBlockedReason", "blockedAutomationSummary"));
         artifacts.put("guardrails", guardrails == null ? Map.of() : guardrails);
         return artifacts;
     }
@@ -261,7 +265,9 @@ public class EngineeringTaskTraceService {
             case "knowledge_rag" -> pick(raw, "knowledgeMatches", "runbookMatches");
             case "code_repair" -> pick(raw, "llmGenerated", "patchGenerated", "rootCause", "patchApply", "patchScopeGuard", "patchSandbox", "patchQuality", "compileGate");
             case "test_verification" -> pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults", "testFailureType", "failedTestFiles");
-            case "release_risk" -> pick(raw, "releaseRiskReport", "humanApprovalPoints", "releaseRiskReasoning", "modelRouting");
+            case "release_risk" -> pick(raw, "releaseRiskReport", "humanApprovalPoints", "releaseRiskReasoning",
+                    "modelRouting", "manualTakeoverRequired", "autoPatchBlockedReason",
+                    "verificationBlockedReason", "blockedAutomationSummary");
             default -> Map.of();
         };
     }
@@ -299,6 +305,10 @@ public class EngineeringTaskTraceService {
         putIfPresent(highlights, "riskPoints", rawEvidence.get("riskPoints"));
         putIfPresent(highlights, "observationMetrics", rawEvidence.get("observationMetrics"));
         putIfPresent(highlights, "rollbackConcerns", rawEvidence.get("rollbackConcerns"));
+        putIfPresent(highlights, "manualTakeoverRequired", rawEvidence.get("manualTakeoverRequired"));
+        putIfPresent(highlights, "autoPatchBlockedReason", rawEvidence.get("autoPatchBlockedReason"));
+        putIfPresent(highlights, "verificationBlockedReason", rawEvidence.get("verificationBlockedReason"));
+        putIfPresent(highlights, "blockedAutomationSummary", rawEvidence.get("blockedAutomationSummary"));
         putIfPresent(highlights, "agentRuntime", rawEvidence.get("agentRuntime"));
         putIfPresent(highlights, "toolRuntime", rawEvidence.get("toolRuntime"));
         if ("agent_loop_investigation".equals(skillId)) {

@@ -99,12 +99,18 @@ public final class CodeOpsBugFixPrompts {
                   * MULTI_METHOD: Fix only finalTargetMethods and necessary signature/import adjustments. Other methods must remain untouched.
                   * FULL_FILE: The incident may require broader changes inside finalTargetFiles. Still prefer minimal changes and preserve normal behavior.
                   * NO_CODE_FIX: This is NOT a code repair incident. Do NOT generate any patch or file rewrite. Output empty unifiedDiffPatch, empty fileRewrites, empty testFileRewrites.
+                - PATCH FORMAT PRIORITY:
+                  1. Prefer fileRewrites for every production Java change.
+                  2. Keep unifiedDiffPatch empty when fileRewrites is present.
+                  3. Use unifiedDiffPatch only when you cannot safely reconstruct complete file content from visible snippets.
+                  4. For STRICT_SINGLE_METHOD / MULTI_METHOD / FULL_FILE Java repairs, fileRewrites is the default expected output because ScopeGuard can validate complete files more reliably than handwritten unified diffs.
                 - For fileRewrites, the newContent MUST contain the COMPLETE file including all unchanged methods. Copy non-target methods VERBATIM from codeContextPack/codeSnippets.
                 - Before outputting, self-check: (1) Did I choose KEEP_SCOPE or EXPAND_SCOPE? (2) Are final targets inside candidateScope?
                   (3) Did I preserve non-target methods exactly? Redo if any answer is wrong.
                 - For INCIDENT_TO_FIX tasks with CODE_FIX strategy, put the complete rewritten production file content in fileRewrites.
                 - This combined Code Repair & Test Agent owns both production fix and test proposal for INCIDENT_TO_FIX.
                 - If writing an exact unified diff is difficult, put the complete rewritten file content in fileRewrites instead.
+                - If you output only unifiedDiffPatch for a Java production change while complete file content is visible, the patch may be rejected by ScopeGuard as UNIFIED_DIFF_ONLY.
                 - If the provided snippets are insufficient to create either a safe patch or a full file rewrite, output an empty unifiedDiffPatch and an empty fileRewrites array.
                 - Prefer a minimal patch over broad refactoring.
                 - Preserve existing behavior for normal requests.
@@ -114,11 +120,11 @@ public final class CodeOpsBugFixPrompts {
                   separately, the robust fix is to add/use an atomic method in IdempotencyService and call it from OrderSubmitService.
                   This requires EXPAND_SCOPE and usually finalScopeType=FULL_FILE over both candidate files.
                 - Do not propose direct production deployment. The patch is a draft for human review.
-                - The patch must be a valid unified diff that can be applied by `git apply`.
-                - Use standard headers exactly like `--- a/path` and `+++ b/path`, followed by a real `@@ -old,count +new,count @@` hunk header.
-                - Every context line in the hunk must be copied exactly from codeSnippets, including indentation.
-                - Every unchanged context line must start with one space, removed lines with `-`, and added lines with `+`.
-                - Do not wrap the patch in markdown fences and do not prefix it with prose such as PATCH_PROPOSAL_DRAFT.
+                - If unifiedDiffPatch is used, it must be a valid unified diff that can be applied by `git apply`.
+                - Unified diff rules: use standard headers exactly like `--- a/path` and `+++ b/path`, followed by a real `@@ -old,count +new,count @@` hunk header.
+                - Unified diff context lines must be copied exactly from codeSnippets, including indentation.
+                - Unified diff unchanged context lines must start with one space, removed lines with `-`, and added lines with `+`.
+                - Do not wrap patches in markdown fences and do not prefix them with prose such as PATCH_PROPOSAL_DRAFT.
                 - The patch or fileRewrites must touch an existing production file from codeSnippets or codeSearchMatches.
                 - If a concrete test can be written using provided snippets and existing project style, put it in testFileRewrites or testUnifiedDiffPatch.
                 - For INCIDENT_TO_FIX with a CODE_FIX decision, do not stop at testSuggestions when the repository is a Maven/JUnit project.
@@ -164,7 +170,7 @@ public final class CodeOpsBugFixPrompts {
                   * TEST_ASSERTION_FAILED: If the test reflects the incident requirement, adjust production code. Otherwise adjust the test.
                   * TEST_PATCH_APPLY_FAILED: Ensure test files exist in correct src/test directories with valid package/imports.
                   * TEST_TIMEOUT: Ensure tests have bounded execution time. Do not use unbounded waits.
-                - In reflection rounds, prefer complete fileRewrites over handwritten unifiedDiffPatch for production Java files.
+                - In every round, prefer complete fileRewrites over handwritten unifiedDiffPatch for production Java files.
                   Keep unifiedDiffPatch empty when fileRewrites is present.
                 - In reflection rounds, broaden the fix only through scopeDecision=EXPAND_SCOPE and only inside repairScope.candidateScope.
                   Otherwise change ONLY the files listed in reflectionDiagnostics.failedFiles or the final repair scope.
@@ -191,7 +197,7 @@ public final class CodeOpsBugFixPrompts {
                     "expectedBehaviorChange": "string",
                     "risk": "LOW|MEDIUM|HIGH"
                   },
-                  "unifiedDiffPatch": "string",
+                  "unifiedDiffPatch": "empty string when fileRewrites is present; unified diff only as fallback",
                   "fileRewrites": [{"filePath": "string", "newContent": "complete file content", "reasoning": "string"}],
                   "testSuggestions": ["string"],
                   "mavenCommands": ["string"],

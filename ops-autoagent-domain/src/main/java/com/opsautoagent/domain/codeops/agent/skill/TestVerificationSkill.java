@@ -170,6 +170,7 @@ public class TestVerificationSkill implements EngineeringSkill {
         PatchApplyResult testPatchApply = shouldApplyTestPatch(task)
                 ? patchApplyService.apply(plan.getRepositoryPath(), testPatchText)
                 : PatchApplyResult.skipped(plan.getRepositoryPath(), "Test patch apply disabled. Set task context allowTestPatchApply=true to modify test files.");
+        List<String> skippedCommands = adjustCommandsForUnappliedTestPatch(plan, testPatchValidation, testPatchApply);
         plan.setTestExecutionResults(runVerificationCommands(task, diffContext, plan));
         boolean testsFailed = hasFailedTestResult(plan.getTestExecutionResults());
         boolean compileFailed = hasCompilationFailure(plan.getTestExecutionResults());
@@ -191,6 +192,7 @@ public class TestVerificationSkill implements EngineeringSkill {
         rawOutput.put("recommendedTests", plan.getRecommendedTests());
         rawOutput.put("coverageGaps", plan.getCoverageGaps());
         rawOutput.put("mavenCommands", plan.getMavenCommands());
+        rawOutput.put("skippedMavenCommands", skippedCommands);
         rawOutput.put("verificationNotes", plan.getVerificationNotes());
         rawOutput.put("testExecutionResults", plan.getTestExecutionResults());
         rawOutput.put("baselinePlan", planToMap(baselinePlan));
@@ -208,6 +210,7 @@ public class TestVerificationSkill implements EngineeringSkill {
         rawOutput.put("testPatchError", value(testPatch.getErrorMessage(), ""));
         rawOutput.put("testPatchValidation", testPatchValidation.toRawOutput());
         rawOutput.put("testPatchApply", testPatchApply.toRawOutput());
+        rawOutput.put("verificationBlockedReason", verificationBlockedReason(testPatchValidation, testPatchApply, skippedCommands));
         rawOutput.put("testPatchRolledBack", testPatchRolledBack);
         rawOutput.put("testPatchRollbackReason", testPatchRolledBack
                 ? "测试补丁已应用但导致编译失败，已回滚测试文件，避免坏测试残留在工作区。"
@@ -373,6 +376,96 @@ public class TestVerificationSkill implements EngineeringSkill {
                 + ", costMillis=" + result.costMillis()
                 + ", output=" + abbreviate(result.output(), 1200));
         return results;
+    }
+
+    private List<String> adjustCommandsForUnappliedTestPatch(TestVerificationPlanEntity plan,
+                                                             PatchValidationResult validation,
+                                                             PatchApplyResult applyResult) {
+        if (plan == null || validation == null || applyResult == null || applyResult.isApplied()) {
+            return List.of();
+        }
+        List<String> missingTests = list(validation.getMissingTouchedFiles()).stream()
+                .filter(this::isTestFile)
+                .map(this::testClassName)
+                .filter(value -> !value.isBlank())
+                .toList();
+        if (missingTests.isEmpty()) {
+            return List.of();
+        }
+        List<String> kept = new ArrayList<>();
+        List<String> skipped = new ArrayList<>();
+        for (String command : list(plan.getMavenCommands())) {
+            CommandFilterResult filterResult = filterMissingTestSelectors(command, missingTests);
+            if (filterResult.skipped()) {
+                skipped.add(command + " [skipped: test patch was not applied]");
+            } else if (!filterResult.command().equals(command)) {
+                kept.add(filterResult.command());
+                skipped.add(command + " [filtered missing tests: " + String.join(", ", filterResult.removedTests()) + "]");
+            } else {
+                kept.add(command);
+            }
+        }
+        if (kept.isEmpty()) {
+            kept.add("mvn -q -DskipTests compile");
+        }
+        if (!skipped.isEmpty()) {
+            plan.setMavenCommands(kept);
+            List<String> notes = new ArrayList<>(list(plan.getVerificationNotes()));
+            notes.add("测试补丁未应用，已跳过仅针对新测试类的 Maven 命令，避免将“测试类不存在”误判为代码失败。");
+            plan.setVerificationNotes(notes);
+        }
+        return skipped;
+    }
+
+    private CommandFilterResult filterMissingTestSelectors(String command, List<String> missingTests) {
+        if (isBlank(command) || missingTests == null || missingTests.isEmpty()) {
+            return new CommandFilterResult(command, false, List.of());
+        }
+        String normalized = command.replace("\"", "").replace("'", "");
+        int index = normalized.indexOf("-Dtest=");
+        if (index < 0) {
+            return new CommandFilterResult(command, false, List.of());
+        }
+        String selector = normalized.substring(index + "-Dtest=".length()).trim();
+        int space = selector.indexOf(' ');
+        if (space >= 0) {
+            selector = selector.substring(0, space);
+        }
+        if (selector.isBlank()) {
+            return new CommandFilterResult(command, false, List.of());
+        }
+        List<String> selected = List.of(selector.split(",")).stream()
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .toList();
+        if (selected.isEmpty()) {
+            return new CommandFilterResult(command, false, List.of());
+        }
+        List<String> kept = selected.stream().filter(item -> !missingTests.contains(item)).toList();
+        List<String> removed = selected.stream().filter(missingTests::contains).toList();
+        if (removed.isEmpty()) {
+            return new CommandFilterResult(command, false, List.of());
+        }
+        if (kept.isEmpty()) {
+            return new CommandFilterResult(command, true, removed);
+        }
+        String updated = command.substring(0, index + "-Dtest=".length())
+                + String.join(",", kept)
+                + command.substring(index + "-Dtest=".length() + selector.length());
+        return new CommandFilterResult(updated, false, removed);
+    }
+
+    private String verificationBlockedReason(PatchValidationResult validation,
+                                             PatchApplyResult applyResult,
+                                             List<String> skippedCommands) {
+        if (skippedCommands == null || skippedCommands.isEmpty()) {
+            return "";
+        }
+        String reason = applyResult == null ? "" : value(applyResult.getErrorMessage(), "");
+        return "Test patch was not applied"
+                + (reason.isBlank() ? "" : ": " + reason)
+                + ". Missing test files="
+                + join(validation == null ? List.of() : validation.getMissingTouchedFiles());
     }
 
     private List<String> parseMavenArgs(String command) {
@@ -805,6 +898,16 @@ public class TestVerificationSkill implements EngineeringSkill {
     private boolean isTestFile(String filePath) {
         String normalized = value(filePath, "").replace('\\', '/');
         return normalized.startsWith("src/test/") && normalized.endsWith(".java");
+    }
+
+    private String testClassName(String filePath) {
+        String normalized = value(filePath, "").replace('\\', '/');
+        int slash = normalized.lastIndexOf('/');
+        String fileName = slash >= 0 ? normalized.substring(slash + 1) : normalized;
+        return fileName.endsWith(".java") ? fileName.substring(0, fileName.length() - ".java".length()) : fileName;
+    }
+
+    private record CommandFilterResult(String command, boolean skipped, List<String> removedTests) {
     }
 
     private List<String> splitContent(String content) {

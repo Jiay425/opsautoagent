@@ -148,6 +148,56 @@ No tests matching pattern "OrderSubmitServiceNullValidationTest" were executed.
 ## 后续优化
 
 1. 让 Bug Fix Agent 优先输出 `fileRewrites`，减少 unified diff 被 ScopeGuard 拦截。
-2. 在 `allowTestPatchApply=false` 时，Test Verification 不应执行尚未创建的目标测试类，可改为输出待执行计划或加 `-Dsurefire.failIfNoSpecifiedTests=false` 的只读探测命令。
+2. 在 `allowTestPatchApply=false` 时，Test Verification 不应执行尚未创建的目标测试类，可改为输出待执行计划或过滤未应用的新测试类。
 3. 给 Release Risk 增加明确字段：`manualTakeoverRequired=true`、`autoPatchBlockedReason`、`verificationBlockedReason`。
 4. 增加一个真实 E2E eval case，断言链路至少包含 agent loop、bug fix、test verification、release risk 四段，并检查 release risk 是否解释安全拦截原因。
+
+## 2026-06-10 后续加固
+
+围绕本次真实 E2E 暴露的问题，已追加一轮成体系优化：
+
+1. `CodeOpsBugFixPrompts` 强化 patch 格式优先级：
+   - 生产 Java 修复默认优先输出 `fileRewrites`。
+   - `fileRewrites` 存在时保持 `unifiedDiffPatch` 为空。
+   - 只有无法安全重建完整文件内容时才使用 `unifiedDiffPatch`。
+   - 明确提示：仅输出 unified diff 可能被 ScopeGuard 判定为 `UNIFIED_DIFF_ONLY`。
+
+2. `TestVerificationSkill` 增强未应用测试补丁时的验证策略：
+   - 当 `allowTestPatchApply=false` 且测试补丁未应用时，自动过滤仅针对新测试类的 Maven 命令。
+   - 如果命令混合了“未应用的新测试类”和“已有测试类”，会剔除未应用的新测试 selector，只保留已有测试执行。
+   - 输出 `skippedMavenCommands` 和 `verificationBlockedReason`，避免把“测试类不存在”误判为代码失败。
+
+3. `ReleaseRiskSkill` 增加结构化人工接管字段：
+   - `manualTakeoverRequired`
+   - `autoPatchBlockedReason`
+   - `verificationBlockedReason`
+   - `blockedAutomationSummary`
+
+4. `EngineeringTaskTraceService` 已把这些字段提升到 Trace highlights、working memory summary 和 stage artifacts。
+
+5. `CodeOpsAgentLoopModelClient` 增加单次重试，用于缓解真实模型端偶发 EOF / 网络瞬断。
+
+最新验证任务：
+
+```text
+taskId=e3d83696-f01c-439e-9b09-0d9a5b19b748
+```
+
+关键结果：
+
+```text
+agent_loop_investigation: SUCCESS
+engineering_knowledge_rag: SUCCESS
+bug_fix: FAILED
+test_verification: SUCCESS
+release_risk_analysis: NO_DIFF
+```
+
+`releaseRisk.blockedAutomationSummary` 已能在 working memory summary 中展示：
+
+```json
+{
+  "manualTakeoverRequired": true,
+  "autoPatchBlockedReason": "Production patch was not applied: Blocked by PatchScopeGuard"
+}
+```
