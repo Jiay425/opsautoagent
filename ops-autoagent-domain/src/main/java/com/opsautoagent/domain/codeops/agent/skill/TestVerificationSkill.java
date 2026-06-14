@@ -12,6 +12,7 @@ import com.opsautoagent.domain.codeops.agent.test.IncidentRegressionScaffoldServ
 import com.opsautoagent.domain.codeops.agent.testpatch.CodeOpsTestPatchAgentInput;
 import com.opsautoagent.domain.codeops.agent.testpatch.CodeOpsTestPatchAgentOutput;
 import com.opsautoagent.domain.codeops.agent.testpatch.CodeOpsTestPatchAgentService;
+import com.opsautoagent.domain.codeops.agent.task.BackgroundToolTaskService;
 import com.opsautoagent.domain.codeops.agent.tool.EngineeringToolGateway;
 import com.opsautoagent.domain.codeops.model.entity.CodeSnippetEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringSkillEntity;
@@ -41,6 +42,8 @@ public class TestVerificationSkill implements EngineeringSkill {
 
     private final EngineeringToolGateway toolGateway;
 
+    private final BackgroundToolTaskService backgroundToolTaskService;
+
     private final CodeOpsTestVerificationAgentService testVerificationAgentService;
 
     private final CodeOpsTestPatchAgentService testPatchAgentService;
@@ -58,12 +61,14 @@ public class TestVerificationSkill implements EngineeringSkill {
     private long testExecutionTimeoutMs;
 
     public TestVerificationSkill(EngineeringToolGateway toolGateway,
+                                 BackgroundToolTaskService backgroundToolTaskService,
                                  CodeOpsTestVerificationAgentService testVerificationAgentService,
                                  CodeOpsTestPatchAgentService testPatchAgentService,
                                  PatchValidationService patchValidationService,
                                  PatchApplyService patchApplyService,
                                  IncidentRegressionScaffoldService incidentRegressionScaffoldService) {
         this.toolGateway = toolGateway;
+        this.backgroundToolTaskService = backgroundToolTaskService;
         this.testVerificationAgentService = testVerificationAgentService;
         this.testPatchAgentService = testPatchAgentService;
         this.patchValidationService = patchValidationService;
@@ -186,6 +191,7 @@ public class TestVerificationSkill implements EngineeringSkill {
         rawOutput.put("originalRepositoryPath", value(diffContext.getRepositoryPath(), ""));
         rawOutput.put("sandboxRepositoryPath", objectString(patchGeneration.get("sandboxRepositoryPath")));
         rawOutput.put("testExecutionRepositoryPath", plan.getRepositoryPath());
+        rawOutput.put("testExecutionAsync", isAsyncTestExecution(task));
         rawOutput.put("changeRef", plan.getChangeRef());
         rawOutput.put("changedFiles", plan.getChangedFiles());
         rawOutput.put("relatedTestFiles", plan.getRelatedTestFiles());
@@ -193,6 +199,13 @@ public class TestVerificationSkill implements EngineeringSkill {
         rawOutput.put("coverageGaps", plan.getCoverageGaps());
         rawOutput.put("mavenCommands", plan.getMavenCommands());
         rawOutput.put("skippedMavenCommands", skippedCommands);
+        rawOutput.put("queuedBackgroundTasks", extractQueuedBackgroundTasks(plan.getTestExecutionResults()));
+        rawOutput.put("backgroundToolTasks", task.getContext() == null
+                ? List.of()
+                : task.getContext().getOrDefault(BackgroundToolTaskService.BACKGROUND_TOOL_TASKS_KEY, List.of()));
+        rawOutput.put("taskNotifications", task.getContext() == null
+                ? List.of()
+                : task.getContext().getOrDefault(BackgroundToolTaskService.TASK_NOTIFICATIONS_KEY, List.of()));
         rawOutput.put("verificationNotes", plan.getVerificationNotes());
         rawOutput.put("testExecutionResults", plan.getTestExecutionResults());
         rawOutput.put("baselinePlan", planToMap(baselinePlan));
@@ -334,19 +347,61 @@ public class TestVerificationSkill implements EngineeringSkill {
     }
 
     private List<String> runVerificationCommands(EngineeringTaskEntity task, RepoDiffContextEntity diffContext, TestVerificationPlanEntity plan) {
+        List<String> plannedCommands = plan == null ? List.of() : list(plan.getMavenCommands());
         if (!testExecutionEnabled) {
+            for (String command : plannedCommands) {
+                List<String> args = parseMavenArgs(command);
+                if (!args.isEmpty()) {
+                    backgroundToolTaskService.recordSkippedMaven(task, "test_verification",
+                            plan == null ? "" : plan.getRepositoryPath(), args,
+                            "真实测试执行未开启，Maven 后台任务仅记录计划，不启动本地进程。");
+                }
+            }
             return List.of("真实测试执行未开启：设置 codeops.test.execution.enabled=true 后会运行推荐 Maven 命令。");
         }
         List<String> results = new ArrayList<>();
-        List<String> plannedCommands = plan == null ? List.of() : list(plan.getMavenCommands());
+        if (isAsyncTestExecution(task)) {
+            if (!plannedCommands.isEmpty()) {
+                for (String command : plannedCommands) {
+                    List<String> args = parseMavenArgs(command);
+                    if (args.isEmpty()) {
+                        continue;
+                    }
+                    var backgroundTask = backgroundToolTaskService.startMavenAsync(
+                            task, "test_verification", plan.getRepositoryPath(), args, testExecutionTimeoutMs);
+                    results.add("backgroundTaskId=" + backgroundTask.getBackgroundTaskId()
+                            + ", command=" + backgroundTask.getRequestSummary()
+                            + ", status=" + backgroundTask.getStatus()
+                            + ", async=true");
+                }
+                return results;
+            }
+            List<String> asyncRelatedTests = resolveRelatedTestFiles(task, diffContext, skillOutput(task, RepoUnderstandingSkill.SKILL_ID));
+            List<String> asyncArgs = new ArrayList<>();
+            asyncArgs.add("-q");
+            if (!asyncRelatedTests.isEmpty()) {
+                asyncArgs.add("-Dtest=" + buildTestSelector(asyncRelatedTests));
+                asyncArgs.add("test");
+            } else {
+                asyncArgs.add("-DskipTests");
+                asyncArgs.add("compile");
+            }
+            var backgroundTask = backgroundToolTaskService.startMavenAsync(
+                    task, "test_verification", plan.getRepositoryPath(), asyncArgs, testExecutionTimeoutMs);
+            results.add("backgroundTaskId=" + backgroundTask.getBackgroundTaskId()
+                    + ", command=" + backgroundTask.getRequestSummary()
+                    + ", status=" + backgroundTask.getStatus()
+                    + ", async=true");
+            return results;
+        }
         if (!plannedCommands.isEmpty()) {
             for (String command : plannedCommands) {
                 List<String> args = parseMavenArgs(command);
                 if (args.isEmpty()) {
                     continue;
                 }
-                EngineeringToolGateway.CommandResult result = toolGateway.runMavenCommand(
-                        plan.getRepositoryPath(), args, testExecutionTimeoutMs);
+                EngineeringToolGateway.CommandResult result = backgroundToolTaskService.runMavenAndRecord(
+                        task, "test_verification", plan.getRepositoryPath(), args, testExecutionTimeoutMs);
                 results.add("command=" + String.join(" ", result.command())
                         + ", success=" + result.success()
                         + ", exitCode=" + result.exitCode()
@@ -368,14 +423,43 @@ public class TestVerificationSkill implements EngineeringSkill {
             args.add("-DskipTests");
             args.add("compile");
         }
-        EngineeringToolGateway.CommandResult result = toolGateway.runMavenCommand(
-                plan.getRepositoryPath(), args, testExecutionTimeoutMs);
+        EngineeringToolGateway.CommandResult result = backgroundToolTaskService.runMavenAndRecord(
+                task, "test_verification", plan.getRepositoryPath(), args, testExecutionTimeoutMs);
         results.add("command=" + String.join(" ", result.command())
                 + ", success=" + result.success()
                 + ", exitCode=" + result.exitCode()
                 + ", costMillis=" + result.costMillis()
                 + ", output=" + abbreviate(result.output(), 1200));
         return results;
+    }
+
+    private List<Map<String, Object>> extractQueuedBackgroundTasks(List<String> testExecutionResults) {
+        List<Map<String, Object>> queued = new ArrayList<>();
+        for (String result : list(testExecutionResults)) {
+            if (isBlank(result) || !result.contains("backgroundTaskId=")) {
+                continue;
+            }
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("backgroundTaskId", extractDelimitedValue(result, "backgroundTaskId=", ","));
+            item.put("command", extractDelimitedValue(result, "command=", ", status="));
+            item.put("status", extractDelimitedValue(result, "status=", ","));
+            item.put("async", result.contains("async=true"));
+            queued.add(item);
+        }
+        return queued;
+    }
+
+    private String extractDelimitedValue(String text, String prefix, String delimiter) {
+        int start = text.indexOf(prefix);
+        if (start < 0) {
+            return "";
+        }
+        start += prefix.length();
+        int end = delimiter == null || delimiter.isEmpty() ? -1 : text.indexOf(delimiter, start);
+        if (end < 0) {
+            end = text.length();
+        }
+        return text.substring(start, end).trim();
     }
 
     private List<String> adjustCommandsForUnappliedTestPatch(TestVerificationPlanEntity plan,
@@ -924,6 +1008,14 @@ public class TestVerificationSkill implements EngineeringSkill {
             return false;
         }
         Object value = task.getContext().get("allowTestPatchApply");
+        return value instanceof Boolean bool ? bool : "true".equalsIgnoreCase(String.valueOf(value));
+    }
+
+    private boolean isAsyncTestExecution(EngineeringTaskEntity task) {
+        if (task == null || task.getContext() == null) {
+            return false;
+        }
+        Object value = task.getContext().get("asyncTestExecution");
         return value instanceof Boolean bool ? bool : "true".equalsIgnoreCase(String.valueOf(value));
     }
 

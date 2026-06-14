@@ -1,6 +1,7 @@
 package com.opsautoagent.domain.codeops.agent.localization;
 
 import com.opsautoagent.domain.codeops.model.entity.CodeSnippetEntity;
+import com.opsautoagent.domain.codeops.model.entity.EvidenceGraphEntity;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -32,6 +33,8 @@ public class CodeLocalizationAgentInput {
     private List<String> codeSearchMatches;
 
     private List<CodeSnippetEntity> codeSnippets;
+
+    private EvidenceGraphEntity evidenceGraph;
 
     private List<String> changedFiles;
 

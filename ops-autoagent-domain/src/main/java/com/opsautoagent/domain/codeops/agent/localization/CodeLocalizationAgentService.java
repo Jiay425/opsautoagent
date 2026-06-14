@@ -87,6 +87,7 @@ public class CodeLocalizationAgentService {
                 .codeHints(input.getCodeHints() == null ? List.of() : input.getCodeHints())
                 .codeSearchMatches(limit(input.getCodeSearchMatches(), 30))
                 .codeSnippets(limit(input.getCodeSnippets(), maxSnippets))
+                .evidenceGraph(input.getEvidenceGraph())
                 .changedFiles(input.getChangedFiles() == null ? List.of() : input.getChangedFiles())
                 .relatedTestFiles(input.getRelatedTestFiles() == null ? List.of() : input.getRelatedTestFiles())
                 .build();

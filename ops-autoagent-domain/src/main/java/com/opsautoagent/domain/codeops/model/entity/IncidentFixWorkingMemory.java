@@ -61,7 +61,7 @@ public class IncidentFixWorkingMemory {
         Map<String, Object> incidentSummary = new LinkedHashMap<>();
         incidentSummary.put("taskType", task.getTaskType());
         incidentSummary.put("goal", task.getGoal());
-        incidentSummary.put("sourceContext", task.getContext() == null ? Map.of() : new LinkedHashMap<>(task.getContext()));
+        incidentSummary.put("sourceContext", compactSourceContext(task.getContext()));
 
         return IncidentFixWorkingMemory.builder()
                 .taskId(task.getTaskId())
@@ -85,6 +85,24 @@ public class IncidentFixWorkingMemory {
                 .createTime(LocalDateTime.now())
                 .updateTime(LocalDateTime.now())
                 .build();
+    }
+
+    private static Map<String, Object> compactSourceContext(Map<String, Object> context) {
+        if (context == null || context.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> compact = new LinkedHashMap<>();
+        context.forEach((key, value) -> {
+            if ("repoBaselineSnapshot".equals(key) && value instanceof Map<?, ?> snapshot) {
+                compact.put("repoBaselineSnapshotSummary", Map.of(
+                        "fileCount", snapshot.size(),
+                        "sampleFiles", snapshot.keySet().stream().limit(20).map(String::valueOf).toList()
+                ));
+            } else {
+                compact.put(key, value);
+            }
+        });
+        return compact;
     }
 
     public void recordSkillOutput(String skillId, Map<String, Object> rawOutput) {

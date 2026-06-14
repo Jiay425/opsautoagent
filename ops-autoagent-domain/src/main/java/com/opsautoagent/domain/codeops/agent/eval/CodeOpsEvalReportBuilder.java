@@ -316,7 +316,7 @@ public class CodeOpsEvalReportBuilder {
         if ("test_verification".equals(skill)) return "testExecutionResults";
         if ("release_risk_analysis".equals(skill)) return "riskPoints";
         if ("ops_diagnosis".equals(skill)) return "codeHints";
-        if ("repo_understanding".equals(skill)) return "targetFiles + targetMethods";
+        if ("repo_understanding".equals(skill)) return "evidenceGraph + targetFiles + targetMethods";
         return "";
     }
 

@@ -1,5 +1,6 @@
 package com.opsautoagent.domain.codeops.agent.skill;
 
+import com.opsautoagent.domain.codeops.agent.evidence.EvidenceGraphBuilderService;
 import com.opsautoagent.domain.codeops.agent.localization.CodeLocalizationAgentInput;
 import com.opsautoagent.domain.codeops.agent.localization.CodeLocalizationAgentOutput;
 import com.opsautoagent.domain.codeops.agent.localization.CodeLocalizationAgentService;
@@ -8,6 +9,7 @@ import com.opsautoagent.domain.codeops.model.entity.CodeSnippetEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringSkillEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringSkillResultEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringTaskEntity;
+import com.opsautoagent.domain.codeops.model.entity.EvidenceGraphEntity;
 import com.opsautoagent.domain.codeops.model.entity.OpsDiagnosisSkillResultEntity;
 import com.opsautoagent.domain.codeops.model.entity.RepoDiffContextEntity;
 import org.springframework.stereotype.Component;
@@ -26,10 +28,14 @@ public class RepoUnderstandingSkill implements EngineeringSkill {
 
     private final CodeLocalizationAgentService codeLocalizationAgentService;
 
+    private final EvidenceGraphBuilderService evidenceGraphBuilderService;
+
     public RepoUnderstandingSkill(EngineeringToolGateway toolGateway,
-                                  CodeLocalizationAgentService codeLocalizationAgentService) {
+                                  CodeLocalizationAgentService codeLocalizationAgentService,
+                                  EvidenceGraphBuilderService evidenceGraphBuilderService) {
         this.toolGateway = toolGateway;
         this.codeLocalizationAgentService = codeLocalizationAgentService;
+        this.evidenceGraphBuilderService = evidenceGraphBuilderService;
     }
 
     @Override
@@ -59,20 +65,25 @@ public class RepoUnderstandingSkill implements EngineeringSkill {
                             .replace("Service", "").replace("Controller", "")).toList(), 20);
         }
         List<CodeSnippetEntity> codeSnippets = loadSnippets(task, codeSearchMatches);
+        Map<String, Object> opsDiagnosis = extractOpsDiagnosis(task);
+        EvidenceGraphEntity evidenceGraph = evidenceGraphBuilderService.build(
+                task, opsDiagnosis, codeHints, codeSearchMatches, codeSnippets);
         CodeLocalizationAgentOutput localization = codeLocalizationAgentService.localize(CodeLocalizationAgentInput.builder()
                 .taskId(task.getTaskId())
                 .taskType(task.getTaskType())
                 .goal(task.getGoal())
                 .repositoryPath(value(diffContext.getRepositoryPath(), ""))
                 .changeRef(changeRef)
-                .opsDiagnosis(extractOpsDiagnosis(task))
+                .opsDiagnosis(opsDiagnosis)
                 .codeHints(codeHints)
                 .codeSearchMatches(codeSearchMatches)
                 .codeSnippets(codeSnippets)
+                .evidenceGraph(evidenceGraph)
                 .changedFiles(diffContext.getChangedFiles() == null ? List.of() : diffContext.getChangedFiles())
                 .relatedTestFiles(diffContext.getRelatedTestFiles() == null ? List.of() : diffContext.getRelatedTestFiles())
                 .build());
-        Map<String, Object> rawOutput = buildRawOutput(diffContext, changeRef, codeHints, codeSearchMatches, codeSnippets, localization);
+        Map<String, Object> rawOutput = buildRawOutput(diffContext, changeRef, codeHints,
+                codeSearchMatches, codeSnippets, evidenceGraph, localization);
         return EngineeringSkillResultEntity.builder()
                 .skillId(SKILL_ID)
                 .status(Boolean.TRUE.equals(diffContext.getDiffAvailable()) ? "SUCCESS" : "NO_DIFF")
@@ -88,6 +99,7 @@ public class RepoUnderstandingSkill implements EngineeringSkill {
                         "相关测试：" + list(diffContext.getRelatedTestFiles()),
                         "Diff hunk 数：" + (diffContext.getHunks() == null ? 0 : diffContext.getHunks().size()),
                         "运维代码线索：" + list(codeHints),
+                        "证据图摘要：" + value(evidenceGraph.getSummary(), ""),
                         "代码搜索命中：" + list(codeSearchMatches),
                         "LLM 代码定位目标文件：" + list(localization.getTargetFiles()),
                         "LLM 代码定位目标方法：" + list(localization.getTargetMethods())
@@ -102,6 +114,7 @@ public class RepoUnderstandingSkill implements EngineeringSkill {
                                                List<String> codeHints,
                                                List<String> codeSearchMatches,
                                                List<CodeSnippetEntity> codeSnippets,
+                                               EvidenceGraphEntity evidenceGraph,
                                                CodeLocalizationAgentOutput localization) {
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("phase", "PHASE_2_CODE_LOCALIZATION");
@@ -113,6 +126,9 @@ public class RepoUnderstandingSkill implements EngineeringSkill {
         output.put("codeHints", codeHints);
         output.put("codeSearchMatches", codeSearchMatches);
         output.put("codeSnippets", codeSnippets);
+        output.put("evidenceGraph", evidenceGraph);
+        output.put("evidenceGraphSummary", evidenceGraph == null ? "" : evidenceGraph.getSummary());
+        output.put("evidenceGraphRankedCodeNodes", evidenceGraph == null ? List.of() : evidenceGraph.getRankedCodeNodes());
         output.put("diffSummary", value(diffContext.getDiffSummary(), ""));
         output.put("diffAvailable", Boolean.TRUE.equals(diffContext.getDiffAvailable()));
         output.put("localizationSuccess", localization.isSuccess());

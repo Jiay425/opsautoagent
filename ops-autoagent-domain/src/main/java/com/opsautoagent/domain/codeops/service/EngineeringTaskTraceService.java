@@ -72,29 +72,39 @@ public class EngineeringTaskTraceService {
         if (task.getContext() == null) {
             return Map.of();
         }
+        Map<String, Object> summary = new LinkedHashMap<>();
         Object memory = task.getContext().get("incidentFixWorkingMemory");
         if (!(memory instanceof IncidentFixWorkingMemory workingMemory)) {
-            return Map.of();
+            putRuntimeSummary(summary, task.getContext());
+            return summary;
         }
-        Map<String, Object> summary = new LinkedHashMap<>();
         putIfPresent(summary, "incidentSummary", workingMemory.getIncidentSummary());
         putIfPresent(summary, "codeHints", workingMemory.getCodeHints());
         putIfPresent(summary, "codeLocalization", compactMap(workingMemory.getCodeLocalization(),
                 "localizationConfidence", "targetFiles", "targetMethods", "suspiciousLocations", "missingEvidence",
+                "evidenceGraphSummary", "evidenceGraphRankedCodeNodes",
                 "finalAnswer", "turns", "trace", "recommendedTests", "strategyType"));
         putIfPresent(summary, "rootCauseAnalysis", workingMemory.getRootCauseAnalysis());
         putIfPresent(summary, "patchGeneration", compactMap(workingMemory.getPatchGeneration(),
                 "rootCause", "confidence", "targetFiles", "llmGenerated", "patchValidation"));
         putIfPresent(summary, "testVerification", compactMap(workingMemory.getTestVerification(),
-                "recommendedTests", "coverageGaps", "mavenCommands", "testExecutionResults"));
+                "recommendedTests", "coverageGaps", "mavenCommands", "testExecutionAsync",
+                "testExecutionResults", "queuedBackgroundTasks", "backgroundToolTasks", "taskNotifications"));
         putIfPresent(summary, "releaseRisk", compactMap(workingMemory.getReleaseRisk(),
                 "releaseRiskReport", "humanApprovalPoints", "releaseRiskReasoning",
                 "manualTakeoverRequired", "autoPatchBlockedReason", "verificationBlockedReason",
                 "blockedAutomationSummary"));
         putIfPresent(summary, "agentTrace", workingMemory.getAgentTrace());
-        putIfPresent(summary, "agentRuntimeTrace", task.getContext().get("agentRuntimeTrace"));
-        putIfPresent(summary, "toolRuntimeTrace", task.getContext().get("toolRuntimeTrace"));
+        putRuntimeSummary(summary, task.getContext());
         return summary;
+    }
+
+    private void putRuntimeSummary(Map<String, Object> summary, Map<String, Object> context) {
+        putIfPresent(summary, "taskDagNodes", context.get("taskDagNodes"));
+        putIfPresent(summary, "backgroundToolTasks", context.get("backgroundToolTasks"));
+        putIfPresent(summary, "taskNotifications", context.get("taskNotifications"));
+        putIfPresent(summary, "agentRuntimeTrace", context.get("agentRuntimeTrace"));
+        putIfPresent(summary, "toolRuntimeTrace", context.get("toolRuntimeTrace"));
     }
 
     private Map<String, Object> compactMap(Map<String, Object> source, String... keys) {
@@ -243,7 +253,9 @@ public class EngineeringTaskTraceService {
     private Map<String, Object> buildIncidentArtifacts(Map<String, Object> raw, Map<String, Object> guardrails) {
         Map<String, Object> artifacts = new LinkedHashMap<>();
         artifacts.put("evidence", pick(raw, "evidenceCoverage", "evidenceProvenance", "evidenceSources", "evidenceDetails"));
-        artifacts.put("localization", pick(raw, "targetFiles", "targetMethods", "suspiciousLocations", "localizationConfidence", "missingEvidence"));
+        artifacts.put("localization", pick(raw, "targetFiles", "targetMethods", "suspiciousLocations",
+                "localizationConfidence", "missingEvidence", "evidenceGraphSummary",
+                "evidenceGraphRankedCodeNodes", "evidenceGraph"));
         artifacts.put("patch", pick(raw, "patchGenerated", "llmGenerated", "patchApply", "patchScopeGuard", "patchSandbox", "patchQuality", "compileGate", "changedFiles"));
         artifacts.put("tests", pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults", "testFailureType", "failedTestFiles", "failedAssertions"));
         artifacts.put("releaseRisk", pick(raw, "releaseRiskReport", "riskPoints", "observationMetrics",
@@ -261,10 +273,13 @@ public class EngineeringTaskTraceService {
             case "ops_evidence" -> pick(raw, "evidenceCoverage", "evidenceProvenance", "evidenceSources", "rootCause", "confidence", "traceId");
             case "code_localization" -> pick(raw, "targetFiles", "targetMethods", "suspiciousLocations",
                     "localizationConfidence", "codeSearchMatches", "finalAnswer", "turns", "trace",
-                    "recommendedTests", "strategyType", "stopReason");
+                    "recommendedTests", "strategyType", "stopReason", "evidenceGraphSummary",
+                    "evidenceGraphRankedCodeNodes", "evidenceGraph");
             case "knowledge_rag" -> pick(raw, "knowledgeMatches", "runbookMatches");
             case "code_repair" -> pick(raw, "llmGenerated", "patchGenerated", "rootCause", "patchApply", "patchScopeGuard", "patchSandbox", "patchQuality", "compileGate");
-            case "test_verification" -> pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults", "testFailureType", "failedTestFiles");
+            case "test_verification" -> pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults",
+                    "testExecutionAsync", "queuedBackgroundTasks", "backgroundToolTasks", "taskNotifications",
+                    "testFailureType", "failedTestFiles");
             case "release_risk" -> pick(raw, "releaseRiskReport", "humanApprovalPoints", "releaseRiskReasoning",
                     "modelRouting", "manualTakeoverRequired", "autoPatchBlockedReason",
                     "verificationBlockedReason", "blockedAutomationSummary");
@@ -277,6 +292,8 @@ public class EngineeringTaskTraceService {
         putIfPresent(highlights, "changedFiles", rawEvidence.get("changedFiles"));
         putIfPresent(highlights, "relatedTestFiles", rawEvidence.get("relatedTestFiles"));
         putIfPresent(highlights, "codeHints", rawEvidence.get("codeHints"));
+        putIfPresent(highlights, "evidenceGraphSummary", rawEvidence.get("evidenceGraphSummary"));
+        putIfPresent(highlights, "evidenceGraphRankedCodeNodes", rawEvidence.get("evidenceGraphRankedCodeNodes"));
         putIfPresent(highlights, "codeSearchMatches", rawEvidence.get("codeSearchMatches"));
         putIfPresent(highlights, "findings", rawEvidence.get("findings"));
         putIfPresent(highlights, "baselineFindings", rawEvidence.get("baselineFindings"));
@@ -297,6 +314,10 @@ public class EngineeringTaskTraceService {
         putIfPresent(highlights, "recommendedTests", rawEvidence.get("recommendedTests"));
         putIfPresent(highlights, "coverageGaps", rawEvidence.get("coverageGaps"));
         putIfPresent(highlights, "testExecutionResults", rawEvidence.get("testExecutionResults"));
+        putIfPresent(highlights, "testExecutionAsync", rawEvidence.get("testExecutionAsync"));
+        putIfPresent(highlights, "queuedBackgroundTasks", rawEvidence.get("queuedBackgroundTasks"));
+        putIfPresent(highlights, "backgroundToolTasks", rawEvidence.get("backgroundToolTasks"));
+        putIfPresent(highlights, "taskNotifications", rawEvidence.get("taskNotifications"));
         putIfPresent(highlights, "testPatchGenerated", rawEvidence.get("testPatchGenerated"));
         putIfPresent(highlights, "testPatchTargetFiles", rawEvidence.get("testPatchTargetFiles"));
         putIfPresent(highlights, "testPatchDraft", rawEvidence.get("testPatchDraft"));

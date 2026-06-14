@@ -18,6 +18,11 @@ public final class CodeLocalizationPrompts {
                 - Output only JSON.
                 - Use only files, methods, snippets, and tests present in the input.
                 - Search results are candidates, not conclusions. Rank them by how well they explain the incident.
+                - Use evidenceGraph when present. Treat graph nodes as alert/log/trace/metric/code/test evidence,
+                  and graph edges as why one evidence item points to a code location.
+                - A method/class that is absent from the alert can still become a candidate only if the evidenceGraph
+                  or codeSnippets show a concrete code relation, such as a caller invoking a helper/service/repository.
+                - In reasoning, cite the evidence chain: incident signal -> search/snippet -> code method/file.
                 - Do not send pure runtime/config/capacity incidents into code repair unless evidence points to source code.
                 - Use strategyType CODE_FIX only when exceptions, stack frames, source symbols, leaks, slow SQL, or code snippets explain the incident.
                 - Use strategyType CODE_FIX for duplicate requestId accepted successfully, idempotency race, check-then-act race,

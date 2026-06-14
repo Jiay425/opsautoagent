@@ -19,6 +19,7 @@ import com.opsautoagent.domain.codeops.agent.runtime.AgentExecutionContext;
 import com.opsautoagent.domain.codeops.agent.runtime.AgentRuntimeService;
 import com.opsautoagent.domain.codeops.agent.runtime.AgentStepTrace;
 import com.opsautoagent.domain.codeops.agent.security.HumanApprovalGate;
+import com.opsautoagent.domain.codeops.agent.task.CodeOpsTaskDagService;
 import com.alibaba.fastjson.JSON;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -52,6 +53,7 @@ public class EngineeringTaskAgentService {
     private final IncidentMemoryService incidentMemoryService;
     private final HumanApprovalGate humanApprovalGate;
     private final AgentRuntimeService agentRuntimeService;
+    private final CodeOpsTaskDagService taskDagService;
 
     private final ConcurrentMap<String, EngineeringTaskEntity> taskStore = new ConcurrentHashMap<>();
 
@@ -62,7 +64,8 @@ public class EngineeringTaskAgentService {
                                        ErrorRecoveryPolicy recoveryPolicy,
                                        IncidentMemoryService incidentMemoryService,
                                        HumanApprovalGate humanApprovalGate,
-                                       AgentRuntimeService agentRuntimeService) {
+                                       AgentRuntimeService agentRuntimeService,
+                                       CodeOpsTaskDagService taskDagService) {
         this.skillRegistry = skillRegistry;
         this.orchestratorPolicy = orchestratorPolicy;
         this.toolGateway = toolGateway;
@@ -71,6 +74,7 @@ public class EngineeringTaskAgentService {
         this.incidentMemoryService = incidentMemoryService;
         this.humanApprovalGate = humanApprovalGate;
         this.agentRuntimeService = agentRuntimeService;
+        this.taskDagService = taskDagService;
     }
 
     public EngineeringTaskEntity submit(EngineeringTaskEntity request) {
@@ -190,8 +194,11 @@ public class EngineeringTaskAgentService {
 
     private void executeSkill(EngineeringTaskEntity task, int stepNo, IncidentFixOrchestratorDecision decision) {
         String skillId = decision.getSelectedSkill();
+        String dagNodeId = taskDagService.markSkillRunning(task, stepNo, skillId, decision.getReason());
         Optional<EngineeringSkill> optionalSkill = skillRegistry.find(skillId);
         if (optionalSkill.isEmpty()) {
+            taskDagService.markSkillCompleted(task, stepNo, skillId, "SKIPPED",
+                    "Skill Registry 中不存在该技能，任务跳过此步骤。", Map.of("nodeId", dagNodeId));
             task.addStep(EngineeringTaskStepEntity.builder()
                     .stepNo(stepNo)
                     .decision(decision.getDecision())
@@ -214,6 +221,13 @@ public class EngineeringTaskAgentService {
             AgentStepTrace runtimeTrace = agentRuntimeService.finish(task, runtimeContext, result);
             mergeSkillOutput(task, skillId, result);
             Map<String, Object> rawEvidence = enrichRawOutputWithRuntime(task, result == null ? null : result.getRawOutput(), runtimeTrace);
+            taskDagService.markSkillCompleted(task, stepNo, skillId, result == null ? "FAILED" : result.getStatus(),
+                    result == null ? "" : result.getSummary(), Map.of(
+                            "nodeId", dagNodeId,
+                            "executionId", runtimeTrace == null ? "" : runtimeTrace.getExecutionId(),
+                            "traceId", runtimeTrace == null ? "" : runtimeTrace.getTraceId(),
+                            "toolCalls", collectToolRuntime(task, runtimeTrace == null ? "" : runtimeTrace.getExecutionId())
+                    ));
             task.addStep(EngineeringTaskStepEntity.builder()
                     .stepNo(stepNo)
                     .decision(decision.getDecision())
@@ -230,6 +244,11 @@ public class EngineeringTaskAgentService {
                     "errorType", e.getClass().getSimpleName(),
                     "errorMessage", e.getMessage() == null ? "" : e.getMessage()
             ), runtimeTrace);
+            taskDagService.markSkillCompleted(task, stepNo, skillId, "FAILED",
+                    "执行失败：" + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()),
+                    Map.of("nodeId", dagNodeId,
+                            "executionId", runtimeTrace == null ? "" : runtimeTrace.getExecutionId(),
+                            "traceId", runtimeTrace == null ? "" : runtimeTrace.getTraceId()));
             task.addStep(EngineeringTaskStepEntity.builder()
                     .stepNo(stepNo)
                     .decision(decision.getDecision())

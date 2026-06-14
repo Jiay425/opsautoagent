@@ -6,6 +6,7 @@ import com.opsautoagent.domain.codeops.model.entity.EngineeringToolDefinitionEnt
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -55,7 +56,12 @@ public class ToolPermissionGate {
         }
         Object command = request.argument("command");
         if (command == null && request.argument("args") != null) {
-            command = "mvn " + request.argument("args");
+            Object args = request.argument("args");
+            if (args instanceof List<?> list) {
+                command = "mvn " + String.join(" ", list.stream().map(String::valueOf).toList());
+            } else {
+                command = "mvn " + args;
+            }
         }
         return permissionPolicy.isCommandAllowed(command == null ? "" : String.valueOf(command));
     }

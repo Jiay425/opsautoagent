@@ -57,6 +57,28 @@ Latest verified LLM run:
 
 The repair agent receives a `CodeContextPack`, not only search hits. It includes primary suspect files, candidate expansion files, same-package dependencies, related tests, build files, and a short reason for each snippet. This keeps the flow LLM-first while giving deterministic guardrails enough structure to block hallucinated or out-of-scope patches.
 
+### Evidence-Driven Code Localization
+
+Code localization now builds an `EvidenceGraph` before asking the LLM to choose files and methods. The graph connects incident signals to repository evidence:
+
+```
+alert/log/trace/metric signal
+  → repository search match
+  → code snippet
+  → method/file node
+  → same-package call relation
+```
+
+This matters for cross-file incidents. For example, an alert may only mention `OrderSubmitService.submitFlashSale`; `IdempotencyService` becomes a candidate only after the visible code shows calls such as `idempotencyService.alreadyProcessed()` and `idempotencyService.markProcessed()`. The prompt requires the localization agent to cite this evidence chain rather than treating search hits as conclusions.
+
+Trace surfaces now expose:
+
+| Field | Purpose |
+|-------|---------|
+| `evidenceGraphSummary` | Compact graph size and top code nodes |
+| `evidenceGraphRankedCodeNodes` | Ranked code candidates with scores |
+| `evidenceGraph` | Full compact node/edge graph for debugging and reports |
+
 **Repair Scope System (Phase 1)**
 
 | scopeType | Trigger | Behavior |
@@ -209,6 +231,28 @@ Alertmanager Webhook
 | 产物 | JSON 报告、Markdown 报告、完整 trace JSON、patch diff |
 
 修复 Agent 接收的是 `CodeContextPack`，不是单纯的搜索命中行。上下文包包含主嫌疑文件、候选扩展文件、同包依赖、相关测试、构建文件，以及每段代码进入上下文的原因。这样既保留 LLM 自主判断，又让确定性 Guard 有足够结构拦截幻觉补丁和越界修改。
+
+### 证据驱动代码定位
+
+代码定位 Agent 调用前会先构建 `EvidenceGraph`。这张图把事故信号和仓库证据串起来：
+
+```
+告警/日志/Trace/指标信号
+  → 仓库搜索命中
+  → 代码片段
+  → 方法/文件节点
+  → 同包调用关系
+```
+
+这对跨文件事故很关键。比如告警可能只提到 `OrderSubmitService.submitFlashSale`；`IdempotencyService` 只有在可见代码里出现 `idempotencyService.alreadyProcessed()` 和 `idempotencyService.markProcessed()` 这类调用关系后，才会进入候选范围。Prompt 要求定位 Agent 引用这条证据链，而不是把搜索结果直接当结论。
+
+Trace 中会直接暴露：
+
+| 字段 | 作用 |
+|------|------|
+| `evidenceGraphSummary` | 图规模和最高分代码节点摘要 |
+| `evidenceGraphRankedCodeNodes` | 带分数的代码候选排序 |
+| `evidenceGraph` | 完整轻量节点/边图，用于调试和报告展示 |
 
 **Repair Scope 修复作用域（Phase 1）**
 

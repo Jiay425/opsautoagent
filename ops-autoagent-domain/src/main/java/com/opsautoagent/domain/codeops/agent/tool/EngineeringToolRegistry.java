@@ -3,6 +3,8 @@ package com.opsautoagent.domain.codeops.agent.tool;
 import com.opsautoagent.domain.codeops.model.entity.CodeSnippetEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringToolDefinitionEntity;
 import com.opsautoagent.domain.codeops.model.entity.RepoDiffContextEntity;
+import com.opsautoagent.domain.codeops.agent.task.BackgroundToolTaskService;
+import com.opsautoagent.domain.codeops.model.entity.BackgroundToolTaskEntity;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -15,13 +17,16 @@ import java.util.Optional;
 public class EngineeringToolRegistry {
 
     private final EngineeringToolGateway gateway;
+    private final BackgroundToolTaskService backgroundToolTaskService;
     private final ToolPermissionGate permissionGate;
     private final Map<String, EngineeringToolDefinitionEntity> definitions = new LinkedHashMap<>();
     private final Map<String, EngineeringToolHandler> handlers = new LinkedHashMap<>();
 
     public EngineeringToolRegistry(EngineeringToolGateway gateway,
+                                   BackgroundToolTaskService backgroundToolTaskService,
                                    ToolPermissionGate permissionGate) {
         this.gateway = gateway;
+        this.backgroundToolTaskService = backgroundToolTaskService;
         this.permissionGate = permissionGate;
         gateway.listTools().forEach(tool -> {
             tool.setArgumentSchema(argumentSchema(tool.getToolName()));
@@ -75,6 +80,8 @@ public class EngineeringToolRegistry {
         handlers.put("repo.read_file_snippet", this::readFileSnippet);
         handlers.put("repo.git_diff", this::gitDiff);
         handlers.put("repo.maven", this::maven);
+        handlers.put("repo.maven_background", this::mavenBackground);
+        handlers.put("task.background_status", this::backgroundStatus);
     }
 
     private EngineeringToolResult createSnapshot(EngineeringToolRequest request) {
@@ -124,6 +131,41 @@ public class EngineeringToolRegistry {
                 .errorType(result.success() ? "" : "COMMAND_FAILED")
                 .errorMessage(result.success() ? "" : result.output())
                 .build();
+    }
+
+    private EngineeringToolResult mavenBackground(EngineeringToolRequest request) {
+        BackgroundToolTaskEntity backgroundTask = backgroundToolTaskService.startMavenAsync(request.getTask(),
+                request.stringArgument("nodeId"),
+                repository(request),
+                stringList(request.argument("args")),
+                request.longArgument("timeoutMillis", 120_000L));
+        Map<String, Object> output = new LinkedHashMap<>();
+        output.put("backgroundTaskId", backgroundTask.getBackgroundTaskId());
+        output.put("status", backgroundTask.getStatus());
+        output.put("toolName", backgroundTask.getToolName());
+        output.put("requestSummary", backgroundTask.getRequestSummary());
+        output.put("nodeId", backgroundTask.getNodeId());
+        output.put("createTime", backgroundTask.getCreateTime());
+        return EngineeringToolResult.builder()
+                .toolName(request.getToolName())
+                .success(true)
+                .status("RUNNING")
+                .summary("backgroundTaskId=" + backgroundTask.getBackgroundTaskId()
+                        + ", status=" + backgroundTask.getStatus())
+                .output(output)
+                .metadata(Map.of("backgroundTaskId", backgroundTask.getBackgroundTaskId()))
+                .build();
+    }
+
+    private EngineeringToolResult backgroundStatus(EngineeringToolRequest request) {
+        String backgroundTaskId = request.stringArgument("backgroundTaskId");
+        BackgroundToolTaskEntity backgroundTask = backgroundToolTaskService.find(backgroundTaskId);
+        if (backgroundTask == null) {
+            return EngineeringToolResult.denied(request.getToolName(), "Unknown backgroundTaskId: " + backgroundTaskId);
+        }
+        return EngineeringToolResult.success(request.getToolName(),
+                "backgroundTaskId=" + backgroundTaskId + ", status=" + backgroundTask.getStatus(),
+                backgroundTask);
     }
 
     private String repository(EngineeringToolRequest request) {
@@ -205,10 +247,14 @@ public class EngineeringToolRegistry {
                     "changeRef", "string, optional, defaults to working_tree",
                     "context", "object, optional, may include repoBaselineSnapshot"
             ));
-            case "repo.maven" -> schema(Map.of(
+            case "repo.maven", "repo.maven_background" -> schema(Map.of(
                     "repository", "string, required, absolute or workspace-relative repository path",
                     "args", "string[], required, Maven arguments only, without leading mvn",
-                    "timeoutMillis", "integer, optional, default 120000"
+                    "timeoutMillis", "integer, optional, default 120000",
+                    "nodeId", "string, optional, DAG node id for notification correlation"
+            ));
+            case "task.background_status" -> schema(Map.of(
+                    "backgroundTaskId", "string, required, id returned by repo.maven_background"
             ));
             default -> Map.of();
         };
