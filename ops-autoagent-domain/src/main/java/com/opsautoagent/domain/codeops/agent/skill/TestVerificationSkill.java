@@ -177,6 +177,8 @@ public class TestVerificationSkill implements EngineeringSkill {
                 : PatchApplyResult.skipped(plan.getRepositoryPath(), "Test patch apply disabled. Set task context allowTestPatchApply=true to modify test files.");
         List<String> skippedCommands = adjustCommandsForUnappliedTestPatch(plan, testPatchValidation, testPatchApply);
         plan.setTestExecutionResults(runVerificationCommands(task, diffContext, plan));
+        List<Map<String, Object>> queuedBackgroundTasks = extractQueuedBackgroundTasks(plan.getTestExecutionResults());
+        boolean waitingBackgroundVerification = isAsyncTestExecution(task) && !queuedBackgroundTasks.isEmpty();
         boolean testsFailed = hasFailedTestResult(plan.getTestExecutionResults());
         boolean compileFailed = hasCompilationFailure(plan.getTestExecutionResults());
         boolean testPatchRolledBack = false;
@@ -199,7 +201,9 @@ public class TestVerificationSkill implements EngineeringSkill {
         rawOutput.put("coverageGaps", plan.getCoverageGaps());
         rawOutput.put("mavenCommands", plan.getMavenCommands());
         rawOutput.put("skippedMavenCommands", skippedCommands);
-        rawOutput.put("queuedBackgroundTasks", extractQueuedBackgroundTasks(plan.getTestExecutionResults()));
+        rawOutput.put("queuedBackgroundTasks", queuedBackgroundTasks);
+        rawOutput.put("backgroundVerificationPending", waitingBackgroundVerification);
+        rawOutput.put("backgroundVerificationStatus", waitingBackgroundVerification ? "RUNNING" : "");
         rawOutput.put("backgroundToolTasks", task.getContext() == null
                 ? List.of()
                 : task.getContext().getOrDefault(BackgroundToolTaskService.BACKGROUND_TOOL_TASKS_KEY, List.of()));
@@ -244,18 +248,23 @@ public class TestVerificationSkill implements EngineeringSkill {
                 && testPatch.isSuccess()
                 && !isBlank(testPatchText)
                 && !testPatchApply.isApplied();
-        String status = (testPatchRequiredButFailed || testsFailed)
+        String status = waitingBackgroundVerification
+                ? "WAITING_BACKGROUND_TASK"
+                : (testPatchRequiredButFailed || testsFailed)
                 ? "FAILED"
                 : (testsPassed || Boolean.TRUE.equals(diffContext.getDiffAvailable()) ? "SUCCESS" : "NO_DIFF");
+        String summary = waitingBackgroundVerification
+                ? "已生成测试验证计划并提交后台 Maven 验证：" + queuedBackgroundTasks.size() + " 个任务运行中。"
+                : "已生成测试验证计划：建议测试 "
+                + plan.getRecommendedTests().size()
+                + " 项，覆盖缺口 "
+                + plan.getCoverageGaps().size()
+                + " 项。";
 
         return EngineeringSkillResultEntity.builder()
                 .skillId(SKILL_ID)
                 .status(status)
-                .summary("已生成测试验证计划：建议测试 "
-                        + plan.getRecommendedTests().size()
-                        + " 项，覆盖缺口 "
-                        + plan.getCoverageGaps().size()
-                        + " 项。")
+                .summary(summary)
                 .evidence(List.of(
                         "任务目标：" + value(task.getGoal(), "未提供"),
                         "变更文件：" + join(plan.getChangedFiles()),

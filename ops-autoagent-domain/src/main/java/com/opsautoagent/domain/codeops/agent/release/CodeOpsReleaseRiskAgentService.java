@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 import jakarta.annotation.Resource;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -67,6 +68,10 @@ public class CodeOpsReleaseRiskAgentService {
                     .report(input.getBaselineReport())
                     .reasoning(List.of())
                     .humanApprovalPoints(List.of("Release risk LLM failed: " + e.getMessage()))
+                    .codeReview(fallbackCodeReview("LLM_FAILED", e.getMessage()))
+                    .reviewVerdict("REVIEW_UNAVAILABLE")
+                    .qualityScore(0)
+                    .patchDecision("HUMAN_REVIEW")
                     .modelRouting(Map.of(
                             "model", modelDecision.getModel(),
                             "modelTier", modelDecision.getModel().contains("flash") ? "flash" : "pro",
@@ -96,6 +101,7 @@ public class CodeOpsReleaseRiskAgentService {
                 .codeLocalization(input.getCodeLocalization())
                 .patchGeneration(input.getPatchGeneration())
                 .testVerification(input.getTestVerification())
+                .patchFacts(input.getPatchFacts() == null ? Map.of() : input.getPatchFacts())
                 .reflectionFailures(input.getReflectionFailures() == null ? List.of() : input.getReflectionFailures())
                 .knowledgeMatches(limit(input.getKnowledgeMatches(), maxKnowledge))
                 .baselineReport(input.getBaselineReport())
@@ -121,9 +127,44 @@ public class CodeOpsReleaseRiskAgentService {
                 .report(report)
                 .reasoning(stringList(object.getJSONArray("reasoning")))
                 .humanApprovalPoints(stringList(object.getJSONArray("humanApprovalPoints")))
+                .codeReview(buildCodeReview(object))
+                .reviewVerdict(value(object.getString("reviewVerdict"), "ACCEPT_WITH_HUMAN_REVIEW"))
+                .qualityScore(object.getInteger("qualityScore") == null ? 0 : object.getInteger("qualityScore"))
+                .patchDecision(value(object.getString("patchDecision"), "HUMAN_REVIEW"))
                 .rawContent(JSON.toJSONString(object))
                 .createTime(LocalDateTime.now())
                 .build();
+    }
+
+    private Map<String, Object> buildCodeReview(JSONObject object) {
+        Map<String, Object> review = new LinkedHashMap<>();
+        review.put("reviewVerdict", value(object.getString("reviewVerdict"), "ACCEPT_WITH_HUMAN_REVIEW"));
+        review.put("qualityScore", object.getInteger("qualityScore") == null ? 0 : object.getInteger("qualityScore"));
+        review.put("deterministicScore", object.getInteger("deterministicScore") == null ? 0 : object.getInteger("deterministicScore"));
+        review.put("semanticScore", object.getInteger("semanticScore") == null ? 0 : object.getInteger("semanticScore"));
+        review.put("patchDecision", value(object.getString("patchDecision"), "HUMAN_REVIEW"));
+        review.put("rootCauseAddressed", object.getBoolean("rootCauseAddressed"));
+        review.put("workaround", object.getBoolean("workaround"));
+        review.put("minimalChange", object.getBoolean("minimalChange"));
+        review.put("scopeSafe", object.getBoolean("scopeSafe"));
+        review.put("testSufficient", object.getBoolean("testSufficient"));
+        review.put("businessRisks", stringList(object.getJSONArray("businessRisks")));
+        review.put("concurrencyRisks", stringList(object.getJSONArray("concurrencyRisks")));
+        review.put("reviewFindings", stringList(object.getJSONArray("reviewFindings")));
+        review.put("mustReview", stringList(object.getJSONArray("mustReview")));
+        return review;
+    }
+
+    private Map<String, Object> fallbackCodeReview(String verdict, String reason) {
+        Map<String, Object> review = new LinkedHashMap<>();
+        review.put("reviewVerdict", verdict);
+        review.put("qualityScore", 0);
+        review.put("deterministicScore", 0);
+        review.put("semanticScore", 0);
+        review.put("patchDecision", "HUMAN_REVIEW");
+        review.put("reviewFindings", List.of(reason));
+        review.put("mustReview", List.of(reason));
+        return review;
     }
 
     private List<String> stringList(JSONArray array) {
@@ -143,6 +184,10 @@ public class CodeOpsReleaseRiskAgentService {
         }
         int limit = Math.max(1, maxSize);
         return values.size() <= limit ? values : values.subList(0, limit);
+    }
+
+    private String value(String value, String defaultValue) {
+        return value == null || value.trim().isEmpty() ? defaultValue : value;
     }
 
 }

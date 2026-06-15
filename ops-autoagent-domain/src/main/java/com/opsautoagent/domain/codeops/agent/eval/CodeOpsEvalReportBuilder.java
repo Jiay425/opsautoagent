@@ -45,7 +45,7 @@ public class CodeOpsEvalReportBuilder {
         boolean patchApplied = hasKeyTrue(rawOutputs, "patchApply", "applied");
         boolean compilePassed = hasKeyTrue(rawOutputs, "compileGate", "success");
         boolean testsPassed = isTestsPassed(rawOutputs);
-        boolean releaseRiskGenerated = task.getSteps() != null && task.getSteps().stream()
+        boolean releaseRiskGenerated = task != null && task.getSteps() != null && task.getSteps().stream()
                 .anyMatch(s -> "release_risk_analysis".equals(s.getSelectedSkill())
                         && ("SUCCESS".equals(s.getStatus()) || "NO_DIFF".equals(s.getStatus())));
         Map<String, Object> evidenceCoverage = mapValue(rawOutputs.get("evidenceCoverage"));
@@ -81,9 +81,7 @@ public class CodeOpsEvalReportBuilder {
                 .finalRiskLevel(extractRiskLevel(rawOutputs))
                 .realEvidenceCoverage(doubleValue(evidenceCoverage.get("realEvidenceCoverage")))
                 .fixtureEvidenceUsed(Boolean.TRUE.equals(evidenceCoverage.get("fixtureFallbackUsed")))
-                .evidenceSourceSummary(Map.of(
-                        "coverage", evidenceCoverage,
-                        "provenance", rawOutputs.getOrDefault("evidenceProvenance", List.of())))
+                .evidenceSourceSummary(evidenceSourceSummary(evidenceCoverage, rawOutputs.get("evidenceProvenance")))
                 .patchQuality(patchQuality)
                 .patchSandbox(patchSandbox)
                 .failureType(extractFailureType(rawOutputs))
@@ -314,7 +312,7 @@ public class CodeOpsEvalReportBuilder {
         String skill = step.getSelectedSkill();
         if ("bug_fix".equals(skill)) return "patchDraft + compileGate";
         if ("test_verification".equals(skill)) return "testExecutionResults";
-        if ("release_risk_analysis".equals(skill)) return "riskPoints";
+        if ("release_risk_analysis".equals(skill)) return "codeReview + riskPoints";
         if ("ops_diagnosis".equals(skill)) return "codeHints";
         if ("repo_understanding".equals(skill)) return "evidenceGraph + targetFiles + targetMethods";
         return "";
@@ -362,6 +360,13 @@ public class CodeOpsEvalReportBuilder {
             return result;
         }
         return Map.of();
+    }
+
+    private Map<String, Object> evidenceSourceSummary(Map<String, Object> coverage, Object provenance) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("coverage", coverage == null ? Map.of() : coverage);
+        summary.put("provenance", provenance == null ? List.of() : provenance);
+        return summary;
     }
 
     private double doubleValue(Object value) {

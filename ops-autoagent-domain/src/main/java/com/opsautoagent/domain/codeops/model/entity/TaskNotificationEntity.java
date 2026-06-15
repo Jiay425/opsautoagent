@@ -30,5 +30,11 @@ public class TaskNotificationEntity {
 
     private Map<String, Object> payload;
 
+    private Boolean consumed;
+
+    private String consumedBy;
+
+    private LocalDateTime consumedTime;
+
     private LocalDateTime createTime;
 }

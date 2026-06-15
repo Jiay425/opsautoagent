@@ -60,6 +60,7 @@ public class ReleaseRiskSkill implements EngineeringSkill {
         RepoDiffContextEntity diffContext = toolGateway.loadDiffContext(task.getRepository(), task.getChangeRef(), task.getContext());
         Map<String, Object> patchGeneration = skillOutput(task, BugFixSkill.SKILL_ID);
         Map<String, Object> testVerification = skillOutput(task, TestVerificationSkill.SKILL_ID);
+        Map<String, Object> patchFacts = buildPatchFacts(patchGeneration, testVerification, diffContext);
         List<EngineeringKnowledgeMatchEntity> knowledgeMatches = knowledgeSearchService.search(
                 task,
                 safeList(diffContext.getChangedFiles()),
@@ -81,6 +82,7 @@ public class ReleaseRiskSkill implements EngineeringSkill {
                 .codeLocalization(codeLocalizationOutput(task))
                 .patchGeneration(patchGeneration)
                 .testVerification(testVerification)
+                .patchFacts(patchFacts)
                 .reflectionFailures(extractReflectionFailures(task))
                 .knowledgeMatches(knowledgeMatches)
                 .baselineReport(baselineReport)
@@ -94,6 +96,7 @@ public class ReleaseRiskSkill implements EngineeringSkill {
         rawOutput.put("changedFiles", safeList(diffContext.getChangedFiles()));
         rawOutput.put("relatedTestFiles", safeList(diffContext.getRelatedTestFiles()));
         rawOutput.put("fixStrategy", fixStrategy(task));
+        rawOutput.put("patchFacts", patchFacts);
         rawOutput.put("reflectionFailures", extractReflectionFailures(task));
         rawOutput.put("hunkCount", safeList(diffContext.getHunks()).size());
         rawOutput.put("knowledgeMatches", knowledgeMatches);
@@ -103,6 +106,10 @@ public class ReleaseRiskSkill implements EngineeringSkill {
         rawOutput.put("llmReleaseRiskFallback", agentOutput.isFallback());
         rawOutput.put("releaseRiskReasoning", agentOutput.getReasoning() == null ? List.of() : agentOutput.getReasoning());
         rawOutput.put("humanApprovalPoints", agentOutput.getHumanApprovalPoints() == null ? List.of() : agentOutput.getHumanApprovalPoints());
+        rawOutput.put("codeReview", agentOutput.getCodeReview() == null ? Map.of() : agentOutput.getCodeReview());
+        rawOutput.put("reviewVerdict", value(agentOutput.getReviewVerdict()));
+        rawOutput.put("qualityScore", agentOutput.getQualityScore() == null ? 0 : agentOutput.getQualityScore());
+        rawOutput.put("patchDecision", value(agentOutput.getPatchDecision()));
         rawOutput.put("manualTakeoverRequired", manualTakeoverRequired(patchGeneration, testVerification));
         rawOutput.put("autoPatchBlockedReason", autoPatchBlockedReason(patchGeneration));
         rawOutput.put("verificationBlockedReason", verificationBlockedReason(testVerification));
@@ -112,13 +119,16 @@ public class ReleaseRiskSkill implements EngineeringSkill {
         return EngineeringSkillResultEntity.builder()
                 .skillId(SKILL_ID)
                 .status(status)
-                .summary("发布风险分析完成：风险等级=" + report.getRiskLevel()
+                .summary("代码审核与发布风险分析完成：verdict=" + value(agentOutput.getReviewVerdict())
+                        + "，qualityScore=" + (agentOutput.getQualityScore() == null ? 0 : agentOutput.getQualityScore())
+                        + "，风险等级=" + report.getRiskLevel()
                         + "，影响范围=" + report.getImpactScopes().size()
                         + "，风险点=" + report.getRiskPoints().size()
                         + "，回归重点=" + report.getRegressionFocus().size())
                 .evidence(buildEvidence(diffContext, report))
                 .nextActions(List.of(
                         "根据风险点补齐或指定回归测试",
+                        "根据 codeReview 结论决定接受、重试或人工审批",
                         "发布前确认上线观察指标和告警阈值",
                         "发布前确认回滚方案、配置回退和数据兼容性"
                 ))
@@ -180,6 +190,69 @@ public class ReleaseRiskSkill implements EngineeringSkill {
                                            Map<String, Object> testVerification) {
         return !autoPatchBlockedReason(patchGeneration).isBlank()
                 || !verificationBlockedReason(testVerification).isBlank();
+    }
+
+    private Map<String, Object> buildPatchFacts(Map<String, Object> patchGeneration,
+                                                Map<String, Object> testVerification,
+                                                RepoDiffContextEntity diffContext) {
+        Map<String, Object> facts = new LinkedHashMap<>();
+        Map<String, Object> guard = mapValue(patchGeneration.get("patchScopeGuard"));
+        Map<String, Object> patchApply = mapValue(patchGeneration.get("patchApply"));
+        Map<String, Object> compileGate = mapValue(patchGeneration.get("compileGate"));
+        Map<String, Object> patchQuality = mapValue(patchGeneration.get("patchQuality"));
+        Map<String, Object> patchDiffAnalysis = mapValue(patchGeneration.get("patchDiffAnalysis"));
+        boolean patchGenerated = Boolean.TRUE.equals(patchGeneration.get("llmGenerated"))
+                || !value(patchGeneration.get("patchDraft")).isBlank();
+        facts.put("patchGenerated", patchGenerated);
+        facts.put("scopeGuardPassed", Boolean.TRUE.equals(guard.get("passed"))
+                || Boolean.TRUE.equals(guard.get("allowed")));
+        facts.put("scopeGuardFailureType", value(guard.get("failureType")));
+        facts.put("scopeViolations", stringList(guard.get("violations")));
+        facts.put("patchApplied", Boolean.TRUE.equals(patchApply.get("applied")));
+        facts.put("compilePassed", compileGate.containsKey("success") ? Boolean.TRUE.equals(compileGate.get("success")) : null);
+        facts.put("testsPassed", testVerification.containsKey("testsPassed") ? Boolean.TRUE.equals(testVerification.get("testsPassed")) : null);
+        facts.put("testFailureType", value(testVerification.get("testFailureType")));
+        facts.put("changedFiles", firstList(patchDiffAnalysis.get("touchedFiles"),
+                patchGeneration.get("changedFiles"), diffContext.getChangedFiles()));
+        facts.put("changedMethods", firstList(patchDiffAnalysis.get("changedMethods"), guard.get("changedMethods")));
+        facts.put("testsChanged", Boolean.TRUE.equals(patchQuality.get("testsChanged"))
+                || Boolean.TRUE.equals(patchDiffAnalysis.get("testsChanged")));
+        facts.put("staticSafetyPassed", !Boolean.FALSE.equals(patchQuality.get("staticSafetyPassed")));
+        facts.put("sensitiveFiles", firstList(patchDiffAnalysis.get("sensitiveFiles")));
+        facts.put("configFileCount", integerValue(patchDiffAnalysis.get("configFileCount")));
+        facts.put("productionFileCount", integerValue(patchDiffAnalysis.get("productionFileCount")));
+        facts.put("testFileCount", integerValue(patchDiffAnalysis.get("testFileCount")));
+        facts.put("minimalChangeScore", integerValue(patchQuality.get("minimalChangeScore")));
+        facts.put("requiresHumanApproval", Boolean.TRUE.equals(patchQuality.get("requiresHumanApproval")));
+        facts.put("recommendedTests", stringList(testVerification.get("recommendedTests")));
+        facts.put("mavenCommands", stringList(testVerification.get("mavenCommands")));
+        facts.put("testExecutionResults", stringList(testVerification.get("testExecutionResults")).stream().limit(5).toList());
+        facts.put("redLines", buildPatchRedLines(facts));
+        return facts;
+    }
+
+    private List<String> buildPatchRedLines(Map<String, Object> facts) {
+        List<String> redLines = new ArrayList<>();
+        boolean patchGenerated = Boolean.TRUE.equals(facts.get("patchGenerated"));
+        if (patchGenerated && !Boolean.TRUE.equals(facts.get("scopeGuardPassed"))) {
+            redLines.add("SCOPE_GUARD_NOT_PASSED");
+        }
+        if (patchGenerated && Boolean.FALSE.equals(facts.get("compilePassed"))) {
+            redLines.add("COMPILE_NOT_PASSED");
+        }
+        if (patchGenerated && Boolean.FALSE.equals(facts.get("testsPassed"))) {
+            redLines.add("TESTS_NOT_PASSED");
+        }
+        if (Boolean.TRUE.equals(facts.get("testsChanged"))) {
+            redLines.add("TESTS_CHANGED");
+        }
+        if (!stringList(facts.get("sensitiveFiles")).isEmpty()) {
+            redLines.add("SENSITIVE_FILES_TOUCHED");
+        }
+        if (integerValue(facts.get("configFileCount")) > 0) {
+            redLines.add("CONFIG_FILES_TOUCHED");
+        }
+        return redLines;
     }
 
     private String autoPatchBlockedReason(Map<String, Object> patchGeneration) {
@@ -245,6 +318,33 @@ public class ReleaseRiskSkill implements EngineeringSkill {
             return list.stream().map(String::valueOf).filter(item -> !item.isBlank()).toList();
         }
         return List.of();
+    }
+
+    private List<String> firstList(Object... values) {
+        if (values == null) {
+            return List.of();
+        }
+        for (Object value : values) {
+            List<String> list = stringList(value);
+            if (!list.isEmpty()) {
+                return list;
+            }
+        }
+        return List.of();
+    }
+
+    private int integerValue(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value == null) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     private List<Object> extractReflectionFailures(EngineeringTaskEntity task) {

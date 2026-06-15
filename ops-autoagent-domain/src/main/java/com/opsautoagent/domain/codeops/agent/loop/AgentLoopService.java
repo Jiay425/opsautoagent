@@ -4,6 +4,8 @@ import com.opsautoagent.domain.codeops.agent.tool.EngineeringToolRegistry;
 import com.opsautoagent.domain.codeops.agent.tool.EngineeringToolRequest;
 import com.opsautoagent.domain.codeops.agent.tool.EngineeringToolResult;
 import com.opsautoagent.domain.codeops.agent.tool.ToolPermissionDecision;
+import com.opsautoagent.domain.codeops.agent.task.BackgroundToolTaskService;
+import com.opsautoagent.domain.codeops.model.entity.TaskNotificationEntity;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -19,9 +21,12 @@ public class AgentLoopService {
     private static final int HARD_MAX_TURNS = 32;
 
     private final EngineeringToolRegistry toolRegistry;
+    private final BackgroundToolTaskService backgroundToolTaskService;
 
-    public AgentLoopService(EngineeringToolRegistry toolRegistry) {
+    public AgentLoopService(EngineeringToolRegistry toolRegistry,
+                            BackgroundToolTaskService backgroundToolTaskService) {
         this.toolRegistry = toolRegistry;
+        this.backgroundToolTaskService = backgroundToolTaskService;
     }
 
     public AgentLoopResult run(AgentLoopRequest request, AgentLoopModelClient modelClient) {
@@ -35,27 +40,28 @@ public class AgentLoopService {
         int maxTurns = normalizeMaxTurns(request == null ? 0 : request.getMaxTurns());
         List<AgentLoopStep> steps = new ArrayList<>();
         for (int turn = 1; turn <= maxTurns; turn++) {
+            List<TaskNotificationEntity> consumedNotifications = consumeBackgroundNotifications(request);
             AgentLoopDecision decision = modelClient.next(request, List.copyOf(steps));
             if (decision == null) {
                 return result("FAILED", "", "model returned null decision", turn, steps);
             }
             if (decision.isFinal()) {
-                appendLoopTrace(request, turn, decision, steps);
+                appendLoopTrace(request, turn, decision, steps, consumedNotifications);
                 return result("COMPLETED", decision.getFinalAnswer(), "final_answer", turn, steps);
             }
             if (decision.getToolCalls() == null || decision.getToolCalls().isEmpty()) {
-                appendLoopTrace(request, turn, decision, steps);
+                appendLoopTrace(request, turn, decision, steps, consumedNotifications);
                 return result("COMPLETED", "", "no_tool_calls", turn, steps);
             }
             for (AgentLoopToolCall toolCall : decision.getToolCalls()) {
                 AgentLoopStep step = executeToolCall(request, turn, toolCall);
                 steps.add(step);
                 if (isHardStop(step.getToolResult())) {
-                    appendLoopTrace(request, turn, decision, steps);
+                    appendLoopTrace(request, turn, decision, steps, consumedNotifications);
                     return result(step.getToolResult().getStatus(), "", step.getToolResult().getSummary(), turn, steps);
                 }
             }
-            appendLoopTrace(request, turn, decision, steps);
+            appendLoopTrace(request, turn, decision, steps, consumedNotifications);
         }
         return result("MAX_TURNS_REACHED", "", "agent loop reached maxTurns=" + maxTurns, maxTurns, steps);
     }
@@ -110,6 +116,26 @@ public class AgentLoopService {
                 .build();
     }
 
+    private List<TaskNotificationEntity> consumeBackgroundNotifications(AgentLoopRequest request) {
+        if (request == null || request.getTask() == null || backgroundToolTaskService == null) {
+            return List.of();
+        }
+        List<TaskNotificationEntity> consumed = backgroundToolTaskService.consumeTerminalNotifications(
+                request.getTask(), "agent-loop-service");
+        if (consumed.isEmpty()) {
+            return List.of();
+        }
+        if (request.getMetadata() == null) {
+            request.setMetadata(new LinkedHashMap<>());
+        }
+        List<Map<String, Object>> observations = consumed.stream()
+                .map(this::notificationObservation)
+                .toList();
+        request.getMetadata().put("backgroundTaskObservations", observations);
+        request.getMetadata().put("latestBackgroundTaskObservation", observations.get(observations.size() - 1));
+        return consumed;
+    }
+
     private int normalizeMaxTurns(int maxTurns) {
         if (maxTurns <= 0) {
             return DEFAULT_MAX_TURNS;
@@ -121,7 +147,8 @@ public class AgentLoopService {
     private void appendLoopTrace(AgentLoopRequest request,
                                  int turn,
                                  AgentLoopDecision decision,
-                                 List<AgentLoopStep> steps) {
+                                 List<AgentLoopStep> steps,
+                                 List<TaskNotificationEntity> consumedNotifications) {
         if (request == null || request.getTask() == null) {
             return;
         }
@@ -145,8 +172,26 @@ public class AgentLoopService {
                 .skip(Math.max(0, steps.size() - 5))
                 .map(this::compactStep)
                 .toList());
+        trace.put("consumedBackgroundNotifications", consumedNotifications == null
+                ? List.of()
+                : consumedNotifications.stream().map(this::notificationObservation).toList());
         trace.put("time", LocalDateTime.now().toString());
         traces.add(trace);
+    }
+
+    private Map<String, Object> notificationObservation(TaskNotificationEntity notification) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        if (notification == null) {
+            return item;
+        }
+        item.put("notificationId", notification.getNotificationId());
+        item.put("nodeId", notification.getNodeId());
+        item.put("backgroundTaskId", notification.getBackgroundTaskId());
+        item.put("type", notification.getType());
+        item.put("status", notification.getStatus());
+        item.put("summary", notification.getSummary());
+        item.put("payload", notification.getPayload() == null ? Map.of() : notification.getPayload());
+        return item;
     }
 
     private Map<String, Object> compactStep(AgentLoopStep step) {

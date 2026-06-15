@@ -24,6 +24,7 @@ public class BackgroundToolTaskService {
 
     public static final String BACKGROUND_TOOL_TASKS_KEY = "backgroundToolTasks";
     public static final String TASK_NOTIFICATIONS_KEY = "taskNotifications";
+    public static final String CONSUMED_TASK_NOTIFICATIONS_KEY = "consumedTaskNotifications";
 
     private final EngineeringToolGateway toolGateway;
 
@@ -131,6 +132,50 @@ public class BackgroundToolTaskService {
         return taskIndex.get(backgroundTaskId);
     }
 
+    public boolean hasRunningTasks(EngineeringTaskEntity task) {
+        return backgroundTasks(task).stream()
+                .anyMatch(backgroundTask -> "RUNNING".equalsIgnoreCase(backgroundTask.getStatus()));
+    }
+
+    public List<TaskNotificationEntity> pendingTerminalNotifications(EngineeringTaskEntity task) {
+        return notifications(task).stream()
+                .filter(notification -> !Boolean.TRUE.equals(notification.getConsumed()))
+                .filter(notification -> isTerminalNotificationType(notification.getType()))
+                .toList();
+    }
+
+    public List<TaskNotificationEntity> consumeTerminalNotifications(EngineeringTaskEntity task, String consumer) {
+        if (task == null) {
+            return List.of();
+        }
+        synchronized (task) {
+            List<TaskNotificationEntity> notifications = new ArrayList<>(notifications(task));
+            List<TaskNotificationEntity> consumed = new ArrayList<>();
+            LocalDateTime now = LocalDateTime.now();
+            for (TaskNotificationEntity notification : notifications) {
+                if (notification == null
+                        || Boolean.TRUE.equals(notification.getConsumed())
+                        || !isTerminalNotificationType(notification.getType())) {
+                    continue;
+                }
+                notification.setConsumed(true);
+                notification.setConsumedBy(consumer == null || consumer.isBlank() ? "agent-loop" : consumer);
+                notification.setConsumedTime(now);
+                consumed.add(notification);
+            }
+            if (consumed.isEmpty()) {
+                return List.of();
+            }
+            Map<String, Object> context = mutableContext(task);
+            context.put(TASK_NOTIFICATIONS_KEY, notifications);
+            List<Map<String, Object>> consumedSnapshots = new ArrayList<>(consumedNotificationSnapshots(task));
+            consumed.stream().map(this::notificationSnapshot).forEach(consumedSnapshots::add);
+            context.put(CONSUMED_TASK_NOTIFICATIONS_KEY, consumedSnapshots);
+            task.setContext(context);
+            return List.copyOf(consumed);
+        }
+    }
+
     private BackgroundToolTaskEntity createBackgroundTask(EngineeringTaskEntity task,
                                                          String nodeId,
                                                          String toolName,
@@ -220,6 +265,7 @@ public class BackgroundToolTaskService {
                     .status(backgroundTask.getStatus())
                     .summary(summary == null ? "" : summary)
                     .payload(payload == null ? Map.of() : payload)
+                    .consumed(false)
                     .createTime(LocalDateTime.now())
                     .build());
             context.put(TASK_NOTIFICATIONS_KEY, notifications);
@@ -281,10 +327,54 @@ public class BackgroundToolTaskService {
                         .status(stringValue(map.get("status")))
                         .summary(stringValue(map.get("summary")))
                         .payload(mapValue(map.get("payload")))
+                        .consumed(booleanValue(map.get("consumed")))
+                        .consumedBy(stringValue(map.get("consumedBy")))
                         .build());
             }
         }
         return notifications;
+    }
+
+    private boolean isTerminalNotificationType(String type) {
+        return "BACKGROUND_TASK_FINISHED".equals(type)
+                || "BACKGROUND_TASK_FAILED".equals(type)
+                || "BACKGROUND_TASK_SKIPPED".equals(type);
+    }
+
+    private Map<String, Object> notificationSnapshot(TaskNotificationEntity notification) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("notificationId", notification.getNotificationId());
+        item.put("taskId", notification.getTaskId());
+        item.put("nodeId", notification.getNodeId());
+        item.put("backgroundTaskId", notification.getBackgroundTaskId());
+        item.put("type", notification.getType());
+        item.put("status", notification.getStatus());
+        item.put("summary", notification.getSummary());
+        item.put("payload", notification.getPayload() == null ? Map.of() : notification.getPayload());
+        item.put("consumed", Boolean.TRUE.equals(notification.getConsumed()));
+        item.put("consumedBy", notification.getConsumedBy() == null ? "" : notification.getConsumedBy());
+        item.put("consumedTime", notification.getConsumedTime() == null ? "" : notification.getConsumedTime().toString());
+        return item;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> consumedNotificationSnapshots(EngineeringTaskEntity task) {
+        if (task == null || task.getContext() == null) {
+            return List.of();
+        }
+        Object value = task.getContext().get(CONSUMED_TASK_NOTIFICATIONS_KEY);
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        List<Map<String, Object>> snapshots = new ArrayList<>();
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> map) {
+                Map<String, Object> snapshot = new LinkedHashMap<>();
+                map.forEach((key, rawValue) -> snapshot.put(String.valueOf(key), rawValue));
+                snapshots.add(snapshot);
+            }
+        }
+        return snapshots;
     }
 
     private Map<String, Object> mutableContext(EngineeringTaskEntity task) {
@@ -320,6 +410,16 @@ public class BackgroundToolTaskService {
         Map<String, Object> result = new LinkedHashMap<>();
         map.forEach((key, item) -> result.put(String.valueOf(key), item));
         return result;
+    }
+
+    private Boolean booleanValue(Object value) {
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value == null) {
+            return false;
+        }
+        return "true".equalsIgnoreCase(String.valueOf(value));
     }
 
     @PreDestroy

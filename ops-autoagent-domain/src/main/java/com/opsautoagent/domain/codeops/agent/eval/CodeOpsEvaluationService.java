@@ -387,7 +387,9 @@ public class CodeOpsEvaluationService {
         List<CodeOpsEvalCaseReport> caseReports = new ArrayList<>();
         for (CodeOpsEvalRun run : runs) {
             CodeOpsEvalCase evalCase = findCase(run.getCaseId());
-            EngineeringTaskEntity task = engineeringTaskAgentService.query(run.getTaskId());
+            EngineeringTaskEntity task = run.getTaskId() == null || run.getTaskId().isBlank()
+                    ? null
+                    : engineeringTaskAgentService.query(run.getTaskId());
             caseReports.add(reportBuilder.buildCaseReport(batchId, evalCase, run, task));
         }
         CodeOpsEvalReport report = reportBuilder.buildReport(batchId, caseReports);
@@ -747,11 +749,22 @@ public class CodeOpsEvaluationService {
         List<String> normalizedActual = actual == null ? List.of() : actual.stream().map(this::normalize).toList();
         List<String> missing = new ArrayList<>();
         for (String value : expected) {
-            if (!normalizedActual.contains(normalize(value))) {
+            if (!skillMatchedByNameOrAlias(value, normalizedActual)) {
                 missing.add(value);
             }
         }
         return missing;
+    }
+
+    private boolean skillMatchedByNameOrAlias(String expectedSkill, List<String> normalizedActual) {
+        String expected = normalize(expectedSkill);
+        if (normalizedActual.contains(expected)) {
+            return true;
+        }
+        if ("repo_understanding".equals(expected)) {
+            return normalizedActual.contains("agent_loop_investigation");
+        }
+        return false;
     }
 
     private List<String> missingByText(List<String> expected, String normalizedText) {

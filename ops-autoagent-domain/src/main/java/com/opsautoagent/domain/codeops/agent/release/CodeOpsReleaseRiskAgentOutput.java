@@ -26,7 +26,15 @@ public class CodeOpsReleaseRiskAgentOutput {
 
     private List<String> humanApprovalPoints;
 
+    private Map<String, Object> codeReview;
+
     private Map<String, Object> modelRouting;
+
+    private String reviewVerdict;
+
+    private Integer qualityScore;
+
+    private String patchDecision;
 
     private String rawContent;
 
@@ -43,6 +51,15 @@ public class CodeOpsReleaseRiskAgentOutput {
                 .report(baselineReport)
                 .reasoning(List.of())
                 .humanApprovalPoints(List.of(reason))
+                .codeReview(Map.of(
+                        "reviewVerdict", "REVIEW_UNAVAILABLE",
+                        "qualityScore", 0,
+                        "patchDecision", "HUMAN_REVIEW",
+                        "reason", reason
+                ))
+                .reviewVerdict("REVIEW_UNAVAILABLE")
+                .qualityScore(0)
+                .patchDecision("HUMAN_REVIEW")
                 .rawContent("")
                 .errorMessage(reason)
                 .costMillis(0L)

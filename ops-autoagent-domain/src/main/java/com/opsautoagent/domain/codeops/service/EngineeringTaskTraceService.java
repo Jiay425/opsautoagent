@@ -91,6 +91,7 @@ public class EngineeringTaskTraceService {
                 "recommendedTests", "coverageGaps", "mavenCommands", "testExecutionAsync",
                 "testExecutionResults", "queuedBackgroundTasks", "backgroundToolTasks", "taskNotifications"));
         putIfPresent(summary, "releaseRisk", compactMap(workingMemory.getReleaseRisk(),
+                "codeReview", "reviewVerdict", "qualityScore", "patchDecision", "patchFacts",
                 "releaseRiskReport", "humanApprovalPoints", "releaseRiskReasoning",
                 "manualTakeoverRequired", "autoPatchBlockedReason", "verificationBlockedReason",
                 "blockedAutomationSummary"));
@@ -259,7 +260,8 @@ public class EngineeringTaskTraceService {
         artifacts.put("patch", pick(raw, "patchGenerated", "llmGenerated", "patchApply", "patchScopeGuard", "patchSandbox", "patchQuality", "compileGate", "changedFiles"));
         artifacts.put("tests", pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults", "testFailureType", "failedTestFiles", "failedAssertions"));
         artifacts.put("releaseRisk", pick(raw, "releaseRiskReport", "riskPoints", "observationMetrics",
-                "rollbackConcerns", "humanApprovalPoints", "manualTakeoverRequired",
+                "rollbackConcerns", "humanApprovalPoints", "codeReview", "reviewVerdict",
+                "qualityScore", "patchDecision", "patchFacts", "manualTakeoverRequired",
                 "autoPatchBlockedReason", "verificationBlockedReason", "blockedAutomationSummary"));
         artifacts.put("guardrails", guardrails == null ? Map.of() : guardrails);
         return artifacts;
@@ -281,6 +283,7 @@ public class EngineeringTaskTraceService {
                     "testExecutionAsync", "queuedBackgroundTasks", "backgroundToolTasks", "taskNotifications",
                     "testFailureType", "failedTestFiles");
             case "release_risk" -> pick(raw, "releaseRiskReport", "humanApprovalPoints", "releaseRiskReasoning",
+                    "codeReview", "reviewVerdict", "qualityScore", "patchDecision", "patchFacts",
                     "modelRouting", "manualTakeoverRequired", "autoPatchBlockedReason",
                     "verificationBlockedReason", "blockedAutomationSummary");
             default -> Map.of();
@@ -324,6 +327,10 @@ public class EngineeringTaskTraceService {
         putIfPresent(highlights, "testPatchValidation", rawEvidence.get("testPatchValidation"));
         putIfPresent(highlights, "testPatchApply", rawEvidence.get("testPatchApply"));
         putIfPresent(highlights, "riskPoints", rawEvidence.get("riskPoints"));
+        putIfPresent(highlights, "codeReview", rawEvidence.get("codeReview"));
+        putIfPresent(highlights, "reviewVerdict", rawEvidence.get("reviewVerdict"));
+        putIfPresent(highlights, "qualityScore", rawEvidence.get("qualityScore"));
+        putIfPresent(highlights, "patchDecision", rawEvidence.get("patchDecision"));
         putIfPresent(highlights, "observationMetrics", rawEvidence.get("observationMetrics"));
         putIfPresent(highlights, "rollbackConcerns", rawEvidence.get("rollbackConcerns"));
         putIfPresent(highlights, "manualTakeoverRequired", rawEvidence.get("manualTakeoverRequired"));

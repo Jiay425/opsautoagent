@@ -42,6 +42,8 @@ public class CodeOpsReleaseRiskAgentInput {
 
     private Map<String, Object> testVerification;
 
+    private Map<String, Object> patchFacts;
+
     private List<Object> reflectionFailures;
 
     private List<EngineeringKnowledgeMatchEntity> knowledgeMatches;

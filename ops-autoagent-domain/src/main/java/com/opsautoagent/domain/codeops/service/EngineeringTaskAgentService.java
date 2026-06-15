@@ -11,6 +11,7 @@ import com.opsautoagent.domain.codeops.model.entity.EngineeringSkillResultEntity
 import com.opsautoagent.domain.codeops.model.entity.EngineeringTaskEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringTaskStepEntity;
 import com.opsautoagent.domain.codeops.model.entity.IncidentFixWorkingMemory;
+import com.opsautoagent.domain.codeops.model.entity.TaskNotificationEntity;
 import com.opsautoagent.domain.codeops.agent.compaction.ContextCompactionService;
 import com.opsautoagent.domain.codeops.agent.memory.IncidentMemoryService;
 import com.opsautoagent.domain.codeops.agent.recovery.ErrorRecoveryPolicy;
@@ -19,6 +20,7 @@ import com.opsautoagent.domain.codeops.agent.runtime.AgentExecutionContext;
 import com.opsautoagent.domain.codeops.agent.runtime.AgentRuntimeService;
 import com.opsautoagent.domain.codeops.agent.runtime.AgentStepTrace;
 import com.opsautoagent.domain.codeops.agent.security.HumanApprovalGate;
+import com.opsautoagent.domain.codeops.agent.task.BackgroundToolTaskService;
 import com.opsautoagent.domain.codeops.agent.task.CodeOpsTaskDagService;
 import com.alibaba.fastjson.JSON;
 import lombok.extern.slf4j.Slf4j;
@@ -54,6 +56,7 @@ public class EngineeringTaskAgentService {
     private final HumanApprovalGate humanApprovalGate;
     private final AgentRuntimeService agentRuntimeService;
     private final CodeOpsTaskDagService taskDagService;
+    private final BackgroundToolTaskService backgroundToolTaskService;
 
     private final ConcurrentMap<String, EngineeringTaskEntity> taskStore = new ConcurrentHashMap<>();
 
@@ -65,7 +68,8 @@ public class EngineeringTaskAgentService {
                                        IncidentMemoryService incidentMemoryService,
                                        HumanApprovalGate humanApprovalGate,
                                        AgentRuntimeService agentRuntimeService,
-                                       CodeOpsTaskDagService taskDagService) {
+                                       CodeOpsTaskDagService taskDagService,
+                                       BackgroundToolTaskService backgroundToolTaskService) {
         this.skillRegistry = skillRegistry;
         this.orchestratorPolicy = orchestratorPolicy;
         this.toolGateway = toolGateway;
@@ -75,6 +79,7 @@ public class EngineeringTaskAgentService {
         this.humanApprovalGate = humanApprovalGate;
         this.agentRuntimeService = agentRuntimeService;
         this.taskDagService = taskDagService;
+        this.backgroundToolTaskService = backgroundToolTaskService;
     }
 
     public EngineeringTaskEntity submit(EngineeringTaskEntity request) {
@@ -140,6 +145,18 @@ public class EngineeringTaskAgentService {
                 break;
             }
             IncidentFixWorkingMemory workingMemory = getOrCreateWorkingMemory(task);
+            List<TaskNotificationEntity> consumedNotifications = backgroundToolTaskService.consumeTerminalNotifications(
+                    task, "engineering-task-agent");
+            if (!consumedNotifications.isEmpty()) {
+                applyBackgroundNotifications(task, workingMemory, consumedNotifications);
+                workingMemory = getOrCreateWorkingMemory(task);
+            }
+            if (isWaitingForBackgroundTasks(task) && backgroundToolTaskService.hasRunningTasks(task)) {
+                stopReason = "后台工具任务仍在运行，任务暂停等待通知消费。";
+                addStopStep(task, stepNo, stopReason);
+                stoppedByDecision = true;
+                break;
+            }
             IncidentFixOrchestratorDecision decision = orchestratorPolicy.decide(task, workingMemory);
             if (decision.shouldStop()) {
                 stopReason = decision.getReason();
@@ -154,7 +171,9 @@ public class EngineeringTaskAgentService {
             addStopStep(task, (task.getSteps() == null ? 0 : task.getSteps().size()) + 1, stopReason);
         }
         boolean failed = isFailureStop(task, stopReason);
-        if (failed) {
+        if (isWaitingForBackgroundTasks(task) && backgroundToolTaskService.hasRunningTasks(task)) {
+            task.setStatus("WAITING_BACKGROUND_TASK");
+        } else if (failed) {
             task.setStatus("FAILED");
         } else if (submitApprovalIfNeeded(task)) {
             task.setStatus("WAITING_APPROVAL");
@@ -473,7 +492,7 @@ public class EngineeringTaskAgentService {
             map.forEach((key, item) -> result.put(String.valueOf(key), item));
             return result;
         }
-        return Map.of();
+        return new LinkedHashMap<>();
     }
 
     private double doubleValue(Object value) {
@@ -595,6 +614,123 @@ public class EngineeringTaskAgentService {
         workingMemory.setTestVerification(new LinkedHashMap<>());
         workingMemory.setReleaseRisk(new LinkedHashMap<>());
         workingMemory.getFinalReview().put("reflectionRound" + (reflectionRound + 1), failure);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void applyBackgroundNotifications(EngineeringTaskEntity task,
+                                              IncidentFixWorkingMemory workingMemory,
+                                              List<TaskNotificationEntity> notifications) {
+        if (task == null || notifications == null || notifications.isEmpty()) {
+            return;
+        }
+        Map<String, Object> context = new LinkedHashMap<>();
+        if (task.getContext() != null) {
+            context.putAll(task.getContext());
+        }
+        List<Map<String, Object>> observations = new ArrayList<>();
+        Object existingObservations = context.get("backgroundTaskObservations");
+        if (existingObservations instanceof List<?> list) {
+            for (Object item : list) {
+                if (item instanceof Map<?, ?> map) {
+                    Map<String, Object> observation = new LinkedHashMap<>();
+                    map.forEach((key, value) -> observation.put(String.valueOf(key), value));
+                    observations.add(observation);
+                }
+            }
+        }
+        List<TaskNotificationEntity> testVerificationNotifications = new ArrayList<>();
+        for (TaskNotificationEntity notification : notifications) {
+            Map<String, Object> observation = notificationObservation(notification);
+            observations.add(observation);
+            if (isTestVerificationNotification(notification)) {
+                testVerificationNotifications.add(notification);
+            }
+        }
+        context.put("backgroundTaskObservations", observations);
+        context.put("latestBackgroundTaskObservation", observations.get(observations.size() - 1));
+        task.setContext(context);
+        if (testVerificationNotifications.isEmpty()) {
+            return;
+        }
+
+        Map<String, Object> skillOutputs = new LinkedHashMap<>();
+        Object existingOutputs = context.get("skillOutputs");
+        if (existingOutputs instanceof Map<?, ?> existingMap) {
+            existingMap.forEach((key, value) -> skillOutputs.put(String.valueOf(key), value));
+        }
+        Map<String, Object> latestTestOutput = mapValue(skillOutputs.get(TestVerificationSkill.SKILL_ID));
+        List<String> testExecutionResults = new ArrayList<>(stringList(latestTestOutput.get("testExecutionResults")));
+        boolean failed = false;
+        for (TaskNotificationEntity notification : testVerificationNotifications) {
+            Map<String, Object> observation = notificationObservation(notification);
+            testExecutionResults.add("backgroundTaskId=" + notification.getBackgroundTaskId()
+                    + ", status=" + notification.getStatus()
+                    + ", type=" + notification.getType()
+                    + ", summary=" + notification.getSummary());
+            if ("FAILED".equalsIgnoreCase(notification.getStatus())
+                    || "BACKGROUND_TASK_FAILED".equals(notification.getType())) {
+                failed = true;
+            }
+            latestTestOutput.put("latestBackgroundTaskObservation", observation);
+        }
+        latestTestOutput.put("backgroundVerificationPending", false);
+        latestTestOutput.put("backgroundVerificationStatus", failed ? "FAILED" : "SUCCESS");
+        latestTestOutput.put("backgroundTaskObservations", testVerificationNotifications.stream()
+                .map(this::notificationObservation)
+                .toList());
+        latestTestOutput.put("testExecutionResults", testExecutionResults);
+        latestTestOutput.put("testsPassed", !failed);
+        skillOutputs.put(TestVerificationSkill.SKILL_ID, latestTestOutput);
+        context.put("skillOutputs", skillOutputs);
+        workingMemory.setTestVerification(latestTestOutput);
+        if (failed) {
+            EngineeringSkillResultEntity failureResult = EngineeringSkillResultEntity.builder()
+                    .skillId(TestVerificationSkill.SKILL_ID)
+                    .status("FAILED")
+                    .summary("后台测试验证失败：" + testVerificationNotifications.get(testVerificationNotifications.size() - 1).getSummary())
+                    .rawOutput(latestTestOutput)
+                    .evidence(testExecutionResults)
+                    .nextActions(List.of("读取后台 Maven 输出", "进入反思修复轮重新生成或调整 patch"))
+                    .build();
+            handleReflectionAfterRepairFailure(task, TestVerificationSkill.SKILL_ID,
+                    failureResult, context, skillOutputs, workingMemory);
+        }
+        context.put("incidentFixWorkingMemory", workingMemory);
+        task.setContext(context);
+    }
+
+    private boolean isWaitingForBackgroundTasks(EngineeringTaskEntity task) {
+        if (task == null || task.getSteps() == null || task.getSteps().isEmpty()) {
+            return false;
+        }
+        return task.getSteps().stream()
+                .anyMatch(step -> TestVerificationSkill.SKILL_ID.equals(step.getSelectedSkill())
+                        && "WAITING_BACKGROUND_TASK".equals(step.getStatus()));
+    }
+
+    private boolean isTestVerificationNotification(TaskNotificationEntity notification) {
+        if (notification == null) {
+            return false;
+        }
+        String nodeId = notification.getNodeId() == null ? "" : notification.getNodeId();
+        return nodeId.contains(TestVerificationSkill.SKILL_ID);
+    }
+
+    private Map<String, Object> notificationObservation(TaskNotificationEntity notification) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        if (notification == null) {
+            return item;
+        }
+        item.put("notificationId", notification.getNotificationId());
+        item.put("nodeId", notification.getNodeId());
+        item.put("backgroundTaskId", notification.getBackgroundTaskId());
+        item.put("type", notification.getType());
+        item.put("status", notification.getStatus());
+        item.put("summary", notification.getSummary());
+        item.put("payload", notification.getPayload() == null ? Map.of() : notification.getPayload());
+        item.put("consumed", Boolean.TRUE.equals(notification.getConsumed()));
+        item.put("consumedBy", notification.getConsumedBy() == null ? "" : notification.getConsumedBy());
+        return item;
     }
 
     private List<Object> extractDiagnostics(List<Object> failures) {
