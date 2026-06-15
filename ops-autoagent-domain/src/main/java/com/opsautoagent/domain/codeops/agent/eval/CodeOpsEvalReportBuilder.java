@@ -57,6 +57,7 @@ public class CodeOpsEvalReportBuilder {
 
         List<CodeOpsEvalStepReport> stepReports = buildStepReports(task);
         List<CodeOpsReflectionReport> reflectionHistory = buildReflectionHistory(task, rawOutputs);
+        CodeOpsLocalizationEvalResult localizationEval = buildLocalizationEval(evalCase, rawOutputs);
 
         return CodeOpsEvalCaseReport.builder()
                 .caseId(run.getCaseId())
@@ -65,6 +66,12 @@ public class CodeOpsEvalReportBuilder {
                 .taskId(run.getTaskId())
                 .taskType(evalCase != null ? evalCase.getTaskType() : "")
                 .scopeType(extractScopeType(rawOutputs))
+                .fixStrategy(extractFixStrategy(rawOutputs))
+                .scopeDecision(extractScopeDecision(rawOutputs))
+                .rootCauseLocationType(extractRootCauseLocationType(rawOutputs))
+                .localizationDecision(extractLocalizationDecision(rawOutputs))
+                .localizationEval(localizationEval)
+                .targetFiles(extractTargetFiles(rawOutputs))
                 .targetMethods(extractTargetMethods(rawOutputs))
                 .selectedSkills(run.getDetail() != null && run.getDetail().get("selectedSkills") instanceof List<?> list
                         ? list.stream().map(String::valueOf).toList() : List.of())
@@ -99,6 +106,15 @@ public class CodeOpsEvalReportBuilder {
 
         long total = cases.size();
         long scopeMatch = cases.stream().filter(this::isScopeAccurate).count();
+        BigDecimal localizationDecisionAccuracy = averageLocalizationScore(cases);
+        long expectedFileCases = cases.stream().filter(c -> hasExpected(c.getLocalizationEval() == null ? null : c.getLocalizationEval().getExpectedTargetFiles())).count();
+        long targetFileHits = cases.stream().filter(c -> Boolean.TRUE.equals(c.getLocalizationEval() == null ? null : c.getLocalizationEval().getTargetFileMatched())).count();
+        long expectedMethodCases = cases.stream().filter(c -> hasExpected(c.getLocalizationEval() == null ? null : c.getLocalizationEval().getExpectedTargetMethods())).count();
+        long targetMethodHits = cases.stream().filter(c -> Boolean.TRUE.equals(c.getLocalizationEval() == null ? null : c.getLocalizationEval().getTargetMethodMatched())).count();
+        long expectedFixStrategyCases = cases.stream().filter(c -> hasText(c.getLocalizationEval() == null ? null : c.getLocalizationEval().getExpectedFixStrategy())).count();
+        long fixStrategyHits = cases.stream().filter(c -> Boolean.TRUE.equals(c.getLocalizationEval() == null ? null : c.getLocalizationEval().getFixStrategyMatched())).count();
+        long expectedScopeDecisionCases = cases.stream().filter(c -> hasText(c.getLocalizationEval() == null ? null : c.getLocalizationEval().getExpectedScopeDecision())).count();
+        long scopeDecisionHits = cases.stream().filter(c -> Boolean.TRUE.equals(c.getLocalizationEval() == null ? null : c.getLocalizationEval().getScopeDecisionMatched())).count();
         long codeFixCases = cases.stream().filter(c -> !"NO_CODE_FIX".equals(c.getScopeType())).count();
         long patchApplied = cases.stream().filter(CodeOpsEvalCaseReport::isPatchApplied).count();
         long compilePassed = cases.stream().filter(CodeOpsEvalCaseReport::isCompilePassed).count();
@@ -126,6 +142,11 @@ public class CodeOpsEvalReportBuilder {
 
         return CodeOpsEvalMetricSummary.builder()
                 .scopeAccuracy(total > 0 ? BigDecimal.valueOf(scopeMatch).divide(BigDecimal.valueOf(total), 2, RoundingMode.HALF_UP) : BigDecimal.ONE)
+                .localizationDecisionAccuracy(localizationDecisionAccuracy)
+                .localizationTargetFileHitRate(expectedFileCases > 0 ? BigDecimal.valueOf(targetFileHits).divide(BigDecimal.valueOf(expectedFileCases), 2, RoundingMode.HALF_UP) : BigDecimal.ONE)
+                .localizationTargetMethodHitRate(expectedMethodCases > 0 ? BigDecimal.valueOf(targetMethodHits).divide(BigDecimal.valueOf(expectedMethodCases), 2, RoundingMode.HALF_UP) : BigDecimal.ONE)
+                .localizationFixStrategyAccuracy(expectedFixStrategyCases > 0 ? BigDecimal.valueOf(fixStrategyHits).divide(BigDecimal.valueOf(expectedFixStrategyCases), 2, RoundingMode.HALF_UP) : BigDecimal.ONE)
+                .localizationScopeDecisionAccuracy(expectedScopeDecisionCases > 0 ? BigDecimal.valueOf(scopeDecisionHits).divide(BigDecimal.valueOf(expectedScopeDecisionCases), 2, RoundingMode.HALF_UP) : BigDecimal.ONE)
                 .patchApplyRate(codeFixCases > 0 ? BigDecimal.valueOf(patchApplied).divide(BigDecimal.valueOf(codeFixCases), 2, RoundingMode.HALF_UP) : BigDecimal.ONE)
                 .compilePassRate(codeFixCases > 0 ? BigDecimal.valueOf(compilePassed).divide(BigDecimal.valueOf(codeFixCases), 2, RoundingMode.HALF_UP) : BigDecimal.ONE)
                 .testPassRate(codeFixCases > 0 ? BigDecimal.valueOf(testsPassed).divide(BigDecimal.valueOf(codeFixCases), 2, RoundingMode.HALF_UP) : BigDecimal.ONE)
@@ -143,6 +164,130 @@ public class CodeOpsEvalReportBuilder {
         if ("NO_CODE_FIX".equals(c.getScopeType())) return !c.isPatchGenerated();
         // Code-fix cases should have a meaningful scope
         return c.getTargetMethods() != null && !c.getTargetMethods().isEmpty();
+    }
+
+    private boolean hasLocalizationDecision(CodeOpsEvalCaseReport c) {
+        if (c == null) {
+            return false;
+        }
+        return c.getFixStrategy() != null && !c.getFixStrategy().isBlank()
+                && c.getScopeDecision() != null && !c.getScopeDecision().isBlank();
+    }
+
+    private BigDecimal averageLocalizationScore(List<CodeOpsEvalCaseReport> cases) {
+        List<BigDecimal> scores = cases.stream()
+                .map(CodeOpsEvalCaseReport::getLocalizationEval)
+                .filter(result -> result != null && result.getScore() != null)
+                .map(CodeOpsLocalizationEvalResult::getScore)
+                .toList();
+        if (scores.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        return scores.stream()
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .divide(BigDecimal.valueOf(scores.size()), 2, RoundingMode.HALF_UP);
+    }
+
+    private CodeOpsLocalizationEvalResult buildLocalizationEval(CodeOpsEvalCase evalCase, Map<String, Object> rawOutputs) {
+        List<String> expectedFiles = evalCase == null || evalCase.getExpectedTargetFiles() == null
+                ? List.of()
+                : evalCase.getExpectedTargetFiles();
+        List<String> expectedMethods = evalCase == null || evalCase.getExpectedTargetMethods() == null
+                ? List.of()
+                : evalCase.getExpectedTargetMethods();
+        String expectedFixStrategy = normalizeToken(evalCase == null ? "" : evalCase.getExpectedFixStrategy());
+        String expectedScopeDecision = normalizeToken(evalCase == null ? "" : evalCase.getExpectedScopeDecision());
+        Boolean expectedShouldRepair = expectedFixStrategy.isBlank() ? null : "CODE_FIX".equals(expectedFixStrategy);
+
+        List<String> actualFiles = extractTargetFiles(rawOutputs);
+        List<String> actualMethods = extractTargetMethods(rawOutputs);
+        String actualFixStrategy = normalizeToken(extractFixStrategy(rawOutputs));
+        String actualScopeDecision = normalizeToken(extractScopeDecision(rawOutputs));
+        Boolean actualShouldRepair = extractShouldEnterCodeRepair(rawOutputs, actualFixStrategy);
+
+        List<String> missingFiles = missingNormalized(expectedFiles, actualFiles);
+        List<String> missingMethods = missingNormalized(expectedMethods, actualMethods);
+
+        Boolean fileMatched = expectedFiles.isEmpty() ? null : missingFiles.isEmpty();
+        Boolean methodMatched = expectedMethods.isEmpty() ? null : missingMethods.isEmpty();
+        Boolean fixMatched = expectedFixStrategy.isBlank() ? null : expectedFixStrategy.equals(actualFixStrategy);
+        Boolean scopeMatched = expectedScopeDecision.isBlank() ? null : expectedScopeDecision.equals(actualScopeDecision);
+        Boolean shouldRepairMatched = expectedShouldRepair == null ? null : expectedShouldRepair.equals(actualShouldRepair);
+
+        BigDecimal score = averageBooleans(List.of(fileMatched, methodMatched, fixMatched, scopeMatched, shouldRepairMatched));
+
+        return CodeOpsLocalizationEvalResult.builder()
+                .score(score)
+                .fixStrategyMatched(fixMatched)
+                .scopeDecisionMatched(scopeMatched)
+                .targetFileMatched(fileMatched)
+                .targetMethodMatched(methodMatched)
+                .shouldEnterCodeRepairMatched(shouldRepairMatched)
+                .expectedTargetFiles(expectedFiles)
+                .actualTargetFiles(actualFiles)
+                .missingTargetFiles(missingFiles)
+                .expectedTargetMethods(expectedMethods)
+                .actualTargetMethods(actualMethods)
+                .missingTargetMethods(missingMethods)
+                .expectedFixStrategy(expectedFixStrategy)
+                .actualFixStrategy(actualFixStrategy)
+                .expectedScopeDecision(expectedScopeDecision)
+                .actualScopeDecision(actualScopeDecision)
+                .expectedShouldEnterCodeRepair(expectedShouldRepair)
+                .actualShouldEnterCodeRepair(actualShouldRepair)
+                .rawDecision(extractLocalizationDecision(rawOutputs))
+                .build();
+    }
+
+    private BigDecimal averageBooleans(List<Boolean> values) {
+        List<Boolean> scored = values.stream().filter(value -> value != null).toList();
+        if (scored.isEmpty()) {
+            return BigDecimal.ONE;
+        }
+        long passed = scored.stream().filter(Boolean.TRUE::equals).count();
+        return BigDecimal.valueOf(passed).divide(BigDecimal.valueOf(scored.size()), 2, RoundingMode.HALF_UP);
+    }
+
+    private List<String> missingNormalized(List<String> expected, List<String> actual) {
+        if (expected == null || expected.isEmpty()) {
+            return List.of();
+        }
+        List<String> actualNormalized = actual == null ? List.of() : actual.stream()
+                .map(this::normalizeComparable)
+                .toList();
+        List<String> missing = new ArrayList<>();
+        for (String item : expected) {
+            String normalized = normalizeComparable(item);
+            boolean matched = actualNormalized.stream().anyMatch(actualItem ->
+                    actualItem.equals(normalized)
+                            || actualItem.endsWith("/" + normalized)
+                            || actualItem.endsWith("." + normalized)
+                            || normalized.endsWith("/" + actualItem)
+                            || normalized.endsWith("." + actualItem));
+            if (!matched) {
+                missing.add(item);
+            }
+        }
+        return missing;
+    }
+
+    private String normalizeComparable(String value) {
+        return value == null ? "" : value.trim()
+                .replace('\\', '/')
+                .replace("$", ".")
+                .toLowerCase();
+    }
+
+    private String normalizeToken(String value) {
+        return value == null ? "" : value.trim().toUpperCase();
+    }
+
+    private boolean hasExpected(List<String> values) {
+        return values != null && !values.isEmpty();
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     @SuppressWarnings("unchecked")
@@ -241,19 +386,109 @@ public class CodeOpsEvalReportBuilder {
         return "";
     }
 
+    private String extractFixStrategy(Map<String, Object> raw) {
+        Map<String, Object> decision = extractLocalizationDecision(raw);
+        Object value = firstNonBlank(decision.get("fixStrategy"), decision.get("strategyType"), raw.get("fixStrategy"), raw.get("strategyType"));
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private String extractScopeDecision(Map<String, Object> raw) {
+        Map<String, Object> decision = extractLocalizationDecision(raw);
+        Object value = firstNonBlank(decision.get("scopeDecisionType"), decision.get("scopeDecision"), raw.get("scopeDecisionType"));
+        return value == null ? extractScopeType(raw) : String.valueOf(value);
+    }
+
+    private String extractRootCauseLocationType(Map<String, Object> raw) {
+        Map<String, Object> decision = extractLocalizationDecision(raw);
+        Object value = firstNonBlank(decision.get("rootCauseLocationType"), raw.get("rootCauseLocationType"));
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private Map<String, Object> extractLocalizationDecision(Map<String, Object> raw) {
+        Object direct = raw.get("localizationDecision");
+        if (direct instanceof Map<?, ?> map) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            map.forEach((key, value) -> result.put(String.valueOf(key), value));
+            return result;
+        }
+        Object codeLoc = raw.get("codeLocalization");
+        if (codeLoc instanceof Map<?, ?> map) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            map.forEach((key, value) -> result.put(String.valueOf(key), value));
+            return result;
+        }
+        return Map.of();
+    }
+
     @SuppressWarnings("unchecked")
-    private List<String> extractTargetMethods(Map<String, Object> raw) {
+    private List<String> extractTargetFiles(Map<String, Object> raw) {
+        List<String> values = new ArrayList<>();
+        Map<String, Object> decision = extractLocalizationDecision(raw);
+        addStrings(values, decision.get("rootCauseCandidateFiles"));
+        addStrings(values, decision.get("targetFiles"));
+        addStrings(values, decision.get("directEvidenceFiles"));
+        addStrings(values, raw.get("rootCauseCandidateFiles"));
+        addStrings(values, raw.get("targetFiles"));
         Object guard = raw.get("patchScopeGuard");
         if (guard instanceof Map<?, ?> gm) {
             Object rs = gm.get("repairScope");
             if (rs instanceof Map<?, ?> rsm) {
-                Object tm = rsm.get("targetMethods");
-                if (tm instanceof List<?> list) {
-                    return list.stream().map(String::valueOf).toList();
-                }
+                addStrings(values, rsm.get("targetFiles"));
             }
         }
-        return List.of();
+        return values.stream()
+                .map(String::valueOf)
+                .filter(value -> value != null && !value.isBlank())
+                .distinct()
+                .toList();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> extractTargetMethods(Map<String, Object> raw) {
+        List<String> values = new ArrayList<>();
+        Map<String, Object> decision = extractLocalizationDecision(raw);
+        addStrings(values, decision.get("targetMethods"));
+        addStrings(values, decision.get("candidateMethods"));
+        addStrings(values, decision.get("suspectedRootCauseLocations"));
+        addStrings(values, raw.get("targetMethods"));
+        addStrings(values, raw.get("candidateMethods"));
+        Object guard = raw.get("patchScopeGuard");
+        if (guard instanceof Map<?, ?> gm) {
+            Object rs = gm.get("repairScope");
+            if (rs instanceof Map<?, ?> rsm) {
+                addStrings(values, rsm.get("targetMethods"));
+            }
+        }
+        return values.stream()
+                .map(String::valueOf)
+                .filter(value -> value != null && !value.isBlank())
+                .distinct()
+                .toList();
+    }
+
+    private void addStrings(List<String> values, Object source) {
+        if (source instanceof List<?> list) {
+            list.stream().map(String::valueOf).filter(value -> !value.isBlank()).forEach(values::add);
+            return;
+        }
+        if (source instanceof String text && !text.isBlank()) {
+            values.add(text);
+        }
+    }
+
+    private Boolean extractShouldEnterCodeRepair(Map<String, Object> raw, String actualFixStrategy) {
+        Map<String, Object> decision = extractLocalizationDecision(raw);
+        Object value = firstNonBlank(decision.get("shouldEnterCodeRepair"), raw.get("shouldEnterCodeRepair"));
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value != null && !String.valueOf(value).isBlank()) {
+            return "true".equalsIgnoreCase(String.valueOf(value));
+        }
+        if (actualFixStrategy == null || actualFixStrategy.isBlank()) {
+            return null;
+        }
+        return "CODE_FIX".equals(actualFixStrategy);
     }
 
     private int extractReflectionRounds(EngineeringTaskEntity task) {

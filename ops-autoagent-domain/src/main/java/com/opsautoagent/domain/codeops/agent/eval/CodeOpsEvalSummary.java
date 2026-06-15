@@ -30,6 +30,16 @@ public class CodeOpsEvalSummary {
 
     private BigDecimal averageCodeLocalizationCoverage;
 
+    private BigDecimal averageLocalizationDecisionCoverage;
+
+    private BigDecimal averageLocalizationTargetFileHitRate;
+
+    private BigDecimal averageLocalizationTargetMethodHitRate;
+
+    private BigDecimal averageLocalizationFixStrategyAccuracy;
+
+    private BigDecimal averageLocalizationScopeDecisionAccuracy;
+
     private BigDecimal averagePatchCoverage;
 
     private BigDecimal averageTestCoverage;

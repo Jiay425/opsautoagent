@@ -255,8 +255,10 @@ public class EngineeringTaskTraceService {
         Map<String, Object> artifacts = new LinkedHashMap<>();
         artifacts.put("evidence", pick(raw, "evidenceCoverage", "evidenceProvenance", "evidenceSources", "evidenceDetails"));
         artifacts.put("localization", pick(raw, "targetFiles", "targetMethods", "suspiciousLocations",
-                "localizationConfidence", "missingEvidence", "evidenceGraphSummary",
-                "evidenceGraphRankedCodeNodes", "evidenceGraph"));
+                "localizationConfidence", "missingEvidence", "fixStrategy", "scopeDecisionType",
+                "rootCauseLocationType", "directEvidenceFiles", "relatedFiles", "rootCauseCandidateFiles",
+                "doNotModifyFiles", "candidateScope", "localizationDecision", "codeLocalization",
+                "preLoopCodeContextPack", "evidenceGraphSummary", "evidenceGraphRankedCodeNodes", "evidenceGraph"));
         artifacts.put("patch", pick(raw, "patchGenerated", "llmGenerated", "patchApply", "patchScopeGuard", "patchSandbox", "patchQuality", "compileGate", "changedFiles"));
         artifacts.put("tests", pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults", "testFailureType", "failedTestFiles", "failedAssertions"));
         artifacts.put("releaseRisk", pick(raw, "releaseRiskReport", "riskPoints", "observationMetrics",
@@ -275,8 +277,10 @@ public class EngineeringTaskTraceService {
             case "ops_evidence" -> pick(raw, "evidenceCoverage", "evidenceProvenance", "evidenceSources", "rootCause", "confidence", "traceId");
             case "code_localization" -> pick(raw, "targetFiles", "targetMethods", "suspiciousLocations",
                     "localizationConfidence", "codeSearchMatches", "finalAnswer", "turns", "trace",
-                    "recommendedTests", "strategyType", "stopReason", "evidenceGraphSummary",
-                    "evidenceGraphRankedCodeNodes", "evidenceGraph");
+                    "recommendedTests", "strategyType", "fixStrategy", "scopeDecisionType",
+                    "rootCauseLocationType", "directEvidenceFiles", "relatedFiles", "rootCauseCandidateFiles",
+                    "doNotModifyFiles", "candidateScope", "localizationDecision", "codeLocalization",
+                    "preLoopCodeContextPack", "stopReason", "evidenceGraphSummary", "evidenceGraphRankedCodeNodes", "evidenceGraph");
             case "knowledge_rag" -> pick(raw, "knowledgeMatches", "runbookMatches");
             case "code_repair" -> pick(raw, "llmGenerated", "patchGenerated", "rootCause", "patchApply", "patchScopeGuard", "patchSandbox", "patchQuality", "compileGate");
             case "test_verification" -> pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults",
@@ -297,6 +301,9 @@ public class EngineeringTaskTraceService {
         putIfPresent(highlights, "codeHints", rawEvidence.get("codeHints"));
         putIfPresent(highlights, "evidenceGraphSummary", rawEvidence.get("evidenceGraphSummary"));
         putIfPresent(highlights, "evidenceGraphRankedCodeNodes", rawEvidence.get("evidenceGraphRankedCodeNodes"));
+        putIfPresent(highlights, "preLoopCodeContextPack", rawEvidence.get("preLoopCodeContextPack"));
+        putIfPresent(highlights, "localizationDecision", rawEvidence.get("localizationDecision"));
+        putIfPresent(highlights, "codeLocalization", rawEvidence.get("codeLocalization"));
         putIfPresent(highlights, "codeSearchMatches", rawEvidence.get("codeSearchMatches"));
         putIfPresent(highlights, "findings", rawEvidence.get("findings"));
         putIfPresent(highlights, "baselineFindings", rawEvidence.get("baselineFindings"));
@@ -352,7 +359,14 @@ public class EngineeringTaskTraceService {
         putIfPresent(highlights, "agentLoopTrace", rawEvidence.get("trace"));
         putIfPresent(highlights, "agentLoopStopReason", rawEvidence.get("stopReason"));
         putIfPresent(highlights, "targetFiles", rawEvidence.get("targetFiles"));
+        putIfPresent(highlights, "targetMethods", rawEvidence.get("targetMethods"));
+        putIfPresent(highlights, "rootCauseCandidateFiles", rawEvidence.get("rootCauseCandidateFiles"));
+        putIfPresent(highlights, "directEvidenceFiles", rawEvidence.get("directEvidenceFiles"));
+        putIfPresent(highlights, "candidateScope", rawEvidence.get("candidateScope"));
         putIfPresent(highlights, "recommendedTests", rawEvidence.get("recommendedTests"));
+        putIfPresent(highlights, "fixStrategy", rawEvidence.get("fixStrategy"));
+        putIfPresent(highlights, "scopeDecisionType", rawEvidence.get("scopeDecisionType"));
+        putIfPresent(highlights, "rootCauseLocationType", rawEvidence.get("rootCauseLocationType"));
         putIfPresent(highlights, "strategyType", rawEvidence.get("strategyType"));
         putIfPresent(highlights, "localizationConfidence", rawEvidence.get("localizationConfidence"));
     }

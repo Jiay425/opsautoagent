@@ -105,17 +105,21 @@ public class CodeOpsEvaluationService {
         List<String> missingPatchKeywords = missingByText(evalCase.getExpectedPatchKeywords(), taskText);
         List<String> missingTestNames = missingByText(evalCase.getExpectedTestNames(), taskText);
         List<String> missingRiskKeywords = missingByText(evalCase.getExpectedRiskKeywords(), taskText);
+        List<String> expectedLocalizationDecision = expectedLocalizationDecision(evalCase);
+        List<String> missingLocalizationDecision = missingByText(expectedLocalizationDecision, taskText);
         List<String> hitTargetFiles = hitByMissing(evalCase.getExpectedTargetFiles(), missingTargetFiles);
         List<String> hitTargetMethods = hitByMissing(evalCase.getExpectedTargetMethods(), missingTargetMethods);
         List<String> hitPatchKeywords = hitByMissing(evalCase.getExpectedPatchKeywords(), missingPatchKeywords);
         List<String> hitTestNames = hitByMissing(evalCase.getExpectedTestNames(), missingTestNames);
         List<String> hitRiskKeywords = hitByMissing(evalCase.getExpectedRiskKeywords(), missingRiskKeywords);
+        List<String> hitLocalizationDecision = hitByMissing(expectedLocalizationDecision, missingLocalizationDecision);
 
         BigDecimal skillCoverage = coverage(evalCase.getExpectedSkills().size(), missingSkills.size());
         BigDecimal evidenceCoverage = coverage(evalCase.getExpectedEvidenceKeywords().size(), missingEvidence.size());
         BigDecimal artifactCoverage = coverage(evalCase.getExpectedArtifacts().size(), missingArtifacts.size());
         BigDecimal codeLocalizationCoverage = coverage(size(evalCase.getExpectedTargetFiles()) + size(evalCase.getExpectedTargetMethods()),
                 missingTargetFiles.size() + missingTargetMethods.size());
+        BigDecimal localizationDecisionCoverage = coverage(size(expectedLocalizationDecision), missingLocalizationDecision.size());
         BigDecimal patchCoverage = coverage(size(evalCase.getExpectedPatchKeywords()), missingPatchKeywords.size());
         BigDecimal testCoverage = coverage(size(evalCase.getExpectedTestNames()), missingTestNames.size());
         BigDecimal riskCoverage = coverage(size(evalCase.getExpectedRiskKeywords()), missingRiskKeywords.size());
@@ -140,6 +144,12 @@ public class CodeOpsEvaluationService {
                 hitPatchKeywords,
                 missingPatchKeywords,
                 "衡量 Patch Generation Agent 的修复 diff/修复说明是否覆盖关键修改意图，分母是 expectedPatchKeywords。"));
+        detail.put("localizationDecisionCoverage", metricDetail(
+                localizationDecisionCoverage,
+                expectedLocalizationDecision,
+                hitLocalizationDecision,
+                missingLocalizationDecision,
+                "衡量 Code Localization Agent 是否判断对 fixStrategy 与 scopeDecision，分母是 expectedFixStrategy + expectedScopeDecision。"));
         detail.put("testCoverage", metricDetail(
                 testCoverage,
                 evalCase.getExpectedTestNames(),
@@ -154,6 +164,7 @@ public class CodeOpsEvaluationService {
                 "衡量 Release Risk Agent 是否覆盖上线观察、回滚、故障指标等风险要点，分母是 expectedRiskKeywords。"));
         detail.put("legacyCoverageScores", Map.of(
                 "codeLocalizationCoverage", codeLocalizationCoverage,
+                "localizationDecisionCoverage", localizationDecisionCoverage,
                 "patchCoverage", patchCoverage,
                 "testCoverage", testCoverage,
                 "riskCoverage", riskCoverage));
@@ -169,6 +180,7 @@ public class CodeOpsEvaluationService {
                 && evidenceCoverage.compareTo(BigDecimal.valueOf(0.5)) >= 0
                 && artifactCoverage.compareTo(BigDecimal.valueOf(0.5)) >= 0
                 && codeLocalizationCoverage.compareTo(BigDecimal.valueOf(0.5)) >= 0
+                && localizationDecisionCoverage.compareTo(BigDecimal.valueOf(0.5)) >= 0
                 && patchCoverage.compareTo(BigDecimal.valueOf(0.5)) >= 0
                 && testCoverage.compareTo(BigDecimal.valueOf(0.5)) >= 0
                 && riskCoverage.compareTo(BigDecimal.valueOf(0.5)) >= 0;
@@ -204,6 +216,20 @@ public class CodeOpsEvaluationService {
                 .detail(detail)
                 .errorMessage(errorMessage)
                 .build();
+    }
+
+    private List<String> expectedLocalizationDecision(CodeOpsEvalCase evalCase) {
+        if (evalCase == null) {
+            return List.of();
+        }
+        List<String> expected = new ArrayList<>();
+        if (evalCase.getExpectedFixStrategy() != null && !evalCase.getExpectedFixStrategy().isBlank()) {
+            expected.add(evalCase.getExpectedFixStrategy());
+        }
+        if (evalCase.getExpectedScopeDecision() != null && !evalCase.getExpectedScopeDecision().isBlank()) {
+            expected.add(evalCase.getExpectedScopeDecision());
+        }
+        return expected;
     }
 
     private boolean hasFailedRepairOrTestStep(List<EngineeringTaskStepEntity> steps) {
@@ -444,6 +470,7 @@ public class CodeOpsEvaluationService {
         BigDecimal evidenceCoverage = BigDecimal.ZERO;
         BigDecimal artifactCoverage = BigDecimal.ZERO;
         BigDecimal codeLocalizationCoverage = BigDecimal.ZERO;
+        BigDecimal localizationDecisionCoverage = BigDecimal.ZERO;
         BigDecimal patchCoverage = BigDecimal.ZERO;
         BigDecimal testCoverage = BigDecimal.ZERO;
         BigDecimal riskCoverage = BigDecimal.ZERO;
@@ -458,6 +485,7 @@ public class CodeOpsEvaluationService {
             evidenceCoverage = evidenceCoverage.add(run.getEvidenceKeywordCoverage());
             artifactCoverage = artifactCoverage.add(run.getArtifactCoverage());
             codeLocalizationCoverage = codeLocalizationCoverage.add(extractDetailScore(run, "codeLocalizationCoverage"));
+            localizationDecisionCoverage = localizationDecisionCoverage.add(extractDetailScore(run, "localizationDecisionCoverage"));
             patchCoverage = patchCoverage.add(extractDetailScore(run, "patchCoverage"));
             testCoverage = testCoverage.add(extractDetailScore(run, "testCoverage"));
             riskCoverage = riskCoverage.add(extractDetailScore(run, "riskCoverage"));
@@ -474,6 +502,15 @@ public class CodeOpsEvaluationService {
                 .averageEvidenceKeywordCoverage(evidenceCoverage.divide(total, 4, RoundingMode.HALF_UP))
                 .averageArtifactCoverage(artifactCoverage.divide(total, 4, RoundingMode.HALF_UP))
                 .averageCodeLocalizationCoverage(codeLocalizationCoverage.divide(total, 4, RoundingMode.HALF_UP))
+                .averageLocalizationDecisionCoverage(localizationDecisionCoverage.divide(total, 4, RoundingMode.HALF_UP))
+                .averageLocalizationTargetFileHitRate(report.getSummaryMetrics() == null
+                        ? BigDecimal.ZERO : report.getSummaryMetrics().getLocalizationTargetFileHitRate())
+                .averageLocalizationTargetMethodHitRate(report.getSummaryMetrics() == null
+                        ? BigDecimal.ZERO : report.getSummaryMetrics().getLocalizationTargetMethodHitRate())
+                .averageLocalizationFixStrategyAccuracy(report.getSummaryMetrics() == null
+                        ? BigDecimal.ZERO : report.getSummaryMetrics().getLocalizationFixStrategyAccuracy())
+                .averageLocalizationScopeDecisionAccuracy(report.getSummaryMetrics() == null
+                        ? BigDecimal.ZERO : report.getSummaryMetrics().getLocalizationScopeDecisionAccuracy())
                 .averagePatchCoverage(patchCoverage.divide(total, 4, RoundingMode.HALF_UP))
                 .averageTestCoverage(testCoverage.divide(total, 4, RoundingMode.HALF_UP))
                 .averageRiskCoverage(riskCoverage.divide(total, 4, RoundingMode.HALF_UP))
@@ -612,6 +649,8 @@ public class CodeOpsEvaluationService {
                         .expectedArtifacts(List.of("patchDraft", "mavenCommands", "riskPoints"))
                         .expectedTargetFiles(List.of("src/main/java/com/example/order/OrderSubmitService.java", "src/main/java/com/example/order/OrderRepository.java"))
                         .expectedTargetMethods(List.of("submit", "create"))
+                        .expectedFixStrategy("CODE_FIX")
+                        .expectedScopeDecision("MULTI_METHOD")
                         .expectedPatchKeywords(List.of("null", "userId", "IllegalArgumentException", "submit"))
                         .expectedTestNames(List.of("OrderSubmitService"))
                         .expectedRiskKeywords(List.of("NPE", "null", "回滚", "观察", "5xx"))
@@ -635,6 +674,8 @@ public class CodeOpsEvaluationService {
                         .expectedArtifacts(List.of("riskPoints"))
                         .expectedTargetFiles(List.of())
                         .expectedTargetMethods(List.of())
+                        .expectedFixStrategy("NO_CODE_FIX")
+                        .expectedScopeDecision("NO_CODE_FIX")
                         .expectedPatchKeywords(List.of())
                         .expectedTestNames(List.of())
                         .expectedRiskKeywords(List.of("GC", "heap", "JVM", "回滚", "观察"))
@@ -660,6 +701,8 @@ public class CodeOpsEvaluationService {
                         .expectedArtifacts(List.of("patchDraft", "riskPoints"))
                         .expectedTargetFiles(List.of("src/main/java/com/example/order/OrderSubmitService.java"))
                         .expectedTargetMethods(List.of("submit"))
+                        .expectedFixStrategy("CODE_FIX")
+                        .expectedScopeDecision("STRICT_SINGLE_METHOD")
                         .expectedPatchKeywords(List.of("null", "userId"))
                         .expectedTestNames(List.of())
                         .expectedRiskKeywords(List.of("NPE", "null", "回滚", "观察"))
@@ -716,6 +759,8 @@ public class CodeOpsEvaluationService {
                                 "src/main/java/com/example/order/IdempotencyService.java"
                         ))
                         .expectedTargetMethods(List.of("submitFlashSale", "alreadyProcessed", "markProcessed", "tryMarkProcessed"))
+                        .expectedFixStrategy("CODE_FIX")
+                        .expectedScopeDecision("CROSS_FILE")
                         .expectedPatchKeywords(List.of("tryMarkProcessed", "synchronized", "requestId", "Duplicate requestId"))
                         .expectedTestNames(List.of("OrderSubmitServiceConcurrencyTest", "IdempotencyServiceAtomicityTest"))
                         .expectedRiskKeywords(List.of("重复", "幂等", "5xx", "回滚", "观察"))

@@ -1385,6 +1385,8 @@ public class BugFixSkill implements EngineeringSkill {
                                                    List<String> suspiciousLocations,
                                                    List<String> diagnosisClues) {
         Map<String, Object> scope = new LinkedHashMap<>();
+        diagnosisClues = new ArrayList<>(diagnosisClues == null ? List.of() : diagnosisClues);
+        suspiciousLocations = new ArrayList<>(suspiciousLocations == null ? List.of() : suspiciousLocations);
 
         List<String> rawMethods = new ArrayList<>();
         List<String> rawFiles = new ArrayList<>();
@@ -1394,29 +1396,22 @@ public class BugFixSkill implements EngineeringSkill {
         // --- Phase 1: Read from CodeLocalization (LLM-driven, most reliable) ---
         Map<String, Object> codeLocalization = extractCodeLocalization(task);
         if (codeLocalization != null && !codeLocalization.isEmpty()) {
-            Object tm = codeLocalization.get("targetMethods");
-            if (tm instanceof List<?> list) {
-                list.stream().map(String::valueOf).filter(v -> !v.isBlank()).forEach(rawMethods::add);
-            }
-            Object tf = codeLocalization.get("targetFiles");
-            if (tf instanceof List<?> list) {
-                list.stream().map(String::valueOf).filter(v -> !v.isBlank())
-                        .map(this::normalizeTargetFile)
-                        .map(file -> resolveRepositoryFile(task.getRepository(), file))
-                        .forEach(rawFiles::add);
-            }
+            collectListValue(codeLocalization.get("targetMethods"), rawMethods);
+            collectListValue(codeLocalization.get("suspectedRootCauseLocations"), rawMethods);
+            collectListValue(codeLocalization.get("candidateMethods"), rawMethods);
+            collectFileListValue(task.getRepository(), codeLocalization.get("rootCauseCandidateFiles"), rawFiles);
+            collectFileListValue(task.getRepository(), codeLocalization.get("targetFiles"), rawFiles);
+            collectFileListValue(task.getRepository(), codeLocalization.get("directEvidenceFiles"), rawFiles);
             Object lc = codeLocalization.get("localizationConfidence");
             if (lc != null) {
                 localizationConfidence = String.valueOf(lc);
             }
-            Object st = codeLocalization.get("strategyType");
-            if (st != null) {
-                strategyType = String.valueOf(st);
-            }
+            strategyType = firstNonBlankString(codeLocalization.get("fixStrategy"), codeLocalization.get("strategyType"), strategyType);
             Object secr = codeLocalization.get("shouldEnterCodeRepair");
             if (Boolean.FALSE.equals(secr)) {
                 strategyType = "NO_CODE_FIX";
             }
+            appendLocalizationEvidence(diagnosisClues, codeLocalization);
         }
 
         // --- Phase 2: Read from FixStrategy (triage classification) ---
@@ -1438,7 +1433,19 @@ public class BugFixSkill implements EngineeringSkill {
                 && "HIGH".equalsIgnoreCase(localizationConfidence)
                 && !rawMethods.isEmpty()
                 && !rawFiles.isEmpty()) {
-            return buildHighConfidenceLocalizationScope(rawMethods, rawFiles, localizationConfidence, diagnosisClues);
+            Map<String, Object> highConfidenceScope = buildHighConfidenceLocalizationScope(rawMethods, rawFiles, localizationConfidence, diagnosisClues);
+            highConfidenceScope.put("strategyType", strategyType);
+            highConfidenceScope.put("fixStrategy", strategyType);
+            highConfidenceScope.put("localizationDecision", codeLocalization);
+            putIfPresent(highConfidenceScope, "scopeDecisionType", codeLocalization.get("scopeDecisionType"));
+            putIfPresent(highConfidenceScope, "rootCauseLocationType", codeLocalization.get("rootCauseLocationType"));
+            putIfPresent(highConfidenceScope, "directEvidenceFiles", codeLocalization.get("directEvidenceFiles"));
+            putIfPresent(highConfidenceScope, "relatedFiles", codeLocalization.get("relatedFiles"));
+            putIfPresent(highConfidenceScope, "rootCauseCandidateFiles", codeLocalization.get("rootCauseCandidateFiles"));
+            putIfPresent(highConfidenceScope, "doNotModifyFiles", codeLocalization.get("doNotModifyFiles"));
+            putIfPresent(highConfidenceScope, "supportingCodeEvidence", codeLocalization.get("supportingCodeEvidence"));
+            putIfPresent(highConfidenceScope, "negativeEvidence", codeLocalization.get("negativeEvidence"));
+            return highConfidenceScope;
         }
 
         if (!"CODE_FIX".equals(strategyType) && evidenceImpliesCodeFix(diagnosisClues, suspiciousLocations)) {
@@ -1641,8 +1648,7 @@ public class BugFixSkill implements EngineeringSkill {
                         || c.toLowerCase().contains("exception") || c.toLowerCase().contains("stack"));
         boolean singleFileInvolved = rawFiles.size() <= 1;
 
-        if ("NO_CODE_FIX".equals(strategyType) || "CONFIG_FIX".equals(strategyType)
-                || "RUNTIME_ACTION".equals(strategyType) || "CAPACITY_FIX".equals(strategyType)) {
+        if (isNonCodeFixStrategy(strategyType)) {
             scopeType = "NO_CODE_FIX";
             scopeConfidence = "HIGH";
             allowedMethods.clear();
@@ -1702,8 +1708,84 @@ public class BugFixSkill implements EngineeringSkill {
         scope.put("strategyType", strategyType);
         scope.put("candidateScope", buildCandidateScope(task.getRepository(), rawFiles, qualifiedMethods, fileMethodMap,
                 strategyType, codeLocalization));
+        scope.put("localizationDecision", codeLocalization == null ? Map.of() : codeLocalization);
+        putIfPresent(scope, "fixStrategy", strategyType);
+        putIfPresent(scope, "scopeDecisionType", codeLocalization == null ? null : codeLocalization.get("scopeDecisionType"));
+        putIfPresent(scope, "rootCauseLocationType", codeLocalization == null ? null : codeLocalization.get("rootCauseLocationType"));
+        putIfPresent(scope, "directEvidenceFiles", codeLocalization == null ? null : codeLocalization.get("directEvidenceFiles"));
+        putIfPresent(scope, "relatedFiles", codeLocalization == null ? null : codeLocalization.get("relatedFiles"));
+        putIfPresent(scope, "rootCauseCandidateFiles", codeLocalization == null ? null : codeLocalization.get("rootCauseCandidateFiles"));
+        putIfPresent(scope, "doNotModifyFiles", codeLocalization == null ? null : codeLocalization.get("doNotModifyFiles"));
+        putIfPresent(scope, "supportingCodeEvidence", codeLocalization == null ? null : codeLocalization.get("supportingCodeEvidence"));
+        putIfPresent(scope, "negativeEvidence", codeLocalization == null ? null : codeLocalization.get("negativeEvidence"));
         scope.put("initialScope", shallowScopeSnapshot(scope));
         return scope;
+    }
+
+    private void collectListValue(Object value, List<String> target) {
+        if (!(value instanceof List<?> list) || target == null) {
+            return;
+        }
+        list.stream()
+                .map(String::valueOf)
+                .map(this::normalizeQualifiedMethod)
+                .filter(v -> !v.isBlank())
+                .forEach(item -> {
+                    if (!target.contains(item)) {
+                        target.add(item);
+                    }
+                });
+    }
+
+    private void collectFileListValue(String repository, Object value, List<String> target) {
+        if (!(value instanceof List<?> list) || target == null) {
+            return;
+        }
+        list.stream()
+                .map(String::valueOf)
+                .filter(v -> !v.isBlank())
+                .map(this::normalizeTargetFile)
+                .map(file -> resolveRepositoryFile(repository, file))
+                .forEach(item -> {
+                    if (!target.contains(item)) {
+                        target.add(item);
+                    }
+                });
+    }
+
+    private String firstNonBlankString(Object first, Object second, String fallback) {
+        String firstValue = first == null ? "" : String.valueOf(first).trim();
+        if (!firstValue.isBlank()) {
+            return firstValue;
+        }
+        String secondValue = second == null ? "" : String.valueOf(second).trim();
+        return secondValue.isBlank() ? fallback : secondValue;
+    }
+
+    private void appendLocalizationEvidence(List<String> diagnosisClues, Map<String, Object> codeLocalization) {
+        if (diagnosisClues == null || codeLocalization == null || codeLocalization.isEmpty()) {
+            return;
+        }
+        for (String key : List.of("summary", "reasoning", "scopeDecisionType", "rootCauseLocationType",
+                "primarySymptomLocation", "supportingCodeEvidence", "negativeEvidence", "suspectedRootCauseLocations")) {
+            Object value = codeLocalization.get(key);
+            if (value != null) {
+                diagnosisClues.add("CODE_LOCALIZATION_" + key + "=" + value);
+            }
+        }
+    }
+
+    private boolean isNonCodeFixStrategy(String strategyType) {
+        String value = strategyType == null ? "" : strategyType.trim().toUpperCase(Locale.ROOT);
+        return "NO_CODE_FIX".equals(value)
+                || "CONFIG_FIX".equals(value)
+                || "CONFIG_CHANGE".equals(value)
+                || "RUNTIME_ACTION".equals(value)
+                || "CAPACITY_FIX".equals(value)
+                || "SCALE_OR_RESOURCE".equals(value)
+                || "ROLLBACK".equals(value)
+                || "DEPENDENCY_INCIDENT".equals(value)
+                || "NEED_MORE_EVIDENCE".equals(value);
     }
 
     @SuppressWarnings("unchecked")
@@ -1762,8 +1844,7 @@ public class BugFixSkill implements EngineeringSkill {
                                                     Map<String, List<String>> fileMethodMap,
                                                     String strategyType,
                                                     Map<String, Object> codeLocalization) {
-        if ("NO_CODE_FIX".equals(strategyType) || "CONFIG_FIX".equals(strategyType)
-                || "RUNTIME_ACTION".equals(strategyType) || "CAPACITY_FIX".equals(strategyType)) {
+        if (isNonCodeFixStrategy(strategyType)) {
             return Map.of(
                     "scopeType", "NO_CODE_FIX",
                     "targetFiles", List.of(),

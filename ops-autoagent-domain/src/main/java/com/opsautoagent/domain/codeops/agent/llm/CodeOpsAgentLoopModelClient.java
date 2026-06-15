@@ -76,6 +76,7 @@ public class CodeOpsAgentLoopModelClient implements AgentLoopModelClient {
         payload.put("completedTurns", completedTurns);
         payload.put("remainingTurns", Math.max(0, maxTurns - completedTurns));
         payload.put("availableTools", toolRegistry.listTools().stream().map(this::toolToMap).toList());
+        payload.put("metadata", request == null || request.getMetadata() == null ? Map.of() : request.getMetadata());
         payload.put("previousSteps", previousSteps == null ? List.of() : previousSteps.stream().map(this::stepToMap).toList());
 
         return """
@@ -85,6 +86,8 @@ public class CodeOpsAgentLoopModelClient implements AgentLoopModelClient {
                 Rules:
                 - Use only tools listed in availableTools.
                 - Prefer read-only repository tools before command execution.
+                - metadata.preLoopCodeContextPack is an initial evidence-backed code context pack. Use it as a starting point, but verify or expand it with tools when uncertainty remains.
+                - Cite concrete files, methods, snippets, tool observations, or preLoopCodeContextPack facts in supportingCodeEvidence.
                 - Keep tool arguments small and explicit.
                 - If enough evidence exists, set finalAnswer and leave toolCalls empty.
                 - If remainingTurns <= 1, do not call more tools. You must produce finalAnswer JSON from the evidence already collected.
@@ -111,7 +114,26 @@ public class CodeOpsAgentLoopModelClient implements AgentLoopModelClient {
                 Required finalAnswer JSON schema when no more tools are needed:
                 {
                   "summary": "brief evidence-based conclusion",
-                  "targetFiles": ["src/main/java/..."],
+                  "fixStrategy": "CODE_FIX|CONFIG_CHANGE|SCALE_OR_RESOURCE|ROLLBACK|DEPENDENCY_INCIDENT|NEED_MORE_EVIDENCE|NO_CODE_FIX",
+                  "scopeDecision": "STRICT_SINGLE_METHOD|MULTI_METHOD|FULL_FILE|CROSS_FILE|NO_CODE_FIX",
+                  "rootCauseLocationType": "STACK_TOP|CALLEE|CALLER|CROSS_FILE|CONFIG|INFRA|DEPENDENCY|UNKNOWN",
+                  "primarySymptomLocation": "ClassName.methodName or file path from stack/log/trace",
+                  "directEvidenceFiles": ["files directly named by stack/log/trace"],
+                  "relatedFiles": ["files reached by reading direct callers/callees"],
+                  "rootCauseCandidateFiles": ["files most likely needing modification"],
+                  "doNotModifyFiles": ["related files that should be observed but not changed"],
+                  "targetFiles": ["root cause candidate source files, prefer rootCauseCandidateFiles"],
+                  "targetMethods": ["ClassName.methodName or methodName"],
+                  "suspectedRootCauseLocations": ["ClassName.methodName with reason if useful"],
+                  "candidateScope": {
+                    "targetFiles": ["candidate files BugFix may modify if justified"],
+                    "targetMethods": ["candidate methods BugFix may modify if justified"],
+                    "expandable": true,
+                    "expansionAllowedWhen": ["direct callee/root cause evidence requires it"]
+                  },
+                  "supportingCodeEvidence": ["specific code facts backing the localization"],
+                  "negativeEvidence": ["checked but not root-cause evidence"],
+                  "reasoning": "why the repair scope and fix strategy are chosen",
                   "recommendedTests": ["src/test/java/... or test recommendation"],
                   "shouldEnterCodeRepair": true,
                   "localizationConfidence": "HIGH|MEDIUM|LOW",

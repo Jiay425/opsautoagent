@@ -40,6 +40,10 @@ public class CodeOpsEvalCase {
 
     private List<String> expectedTargetMethods;
 
+    private String expectedFixStrategy;
+
+    private String expectedScopeDecision;
+
     private List<String> expectedPatchKeywords;
 
     private List<String> expectedTestNames;

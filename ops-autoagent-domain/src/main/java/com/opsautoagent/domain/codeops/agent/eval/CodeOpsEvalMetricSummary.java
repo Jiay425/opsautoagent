@@ -14,6 +14,11 @@ import java.math.BigDecimal;
 public class CodeOpsEvalMetricSummary {
 
     private BigDecimal scopeAccuracy;
+    private BigDecimal localizationDecisionAccuracy;
+    private BigDecimal localizationTargetFileHitRate;
+    private BigDecimal localizationTargetMethodHitRate;
+    private BigDecimal localizationFixStrategyAccuracy;
+    private BigDecimal localizationScopeDecisionAccuracy;
     private BigDecimal patchApplyRate;
     private BigDecimal compilePassRate;
     private BigDecimal testPassRate;
@@ -26,6 +31,11 @@ public class CodeOpsEvalMetricSummary {
     public static CodeOpsEvalMetricSummary empty() {
         return builder()
                 .scopeAccuracy(BigDecimal.ZERO)
+                .localizationDecisionAccuracy(BigDecimal.ZERO)
+                .localizationTargetFileHitRate(BigDecimal.ZERO)
+                .localizationTargetMethodHitRate(BigDecimal.ZERO)
+                .localizationFixStrategyAccuracy(BigDecimal.ZERO)
+                .localizationScopeDecisionAccuracy(BigDecimal.ZERO)
                 .patchApplyRate(BigDecimal.ZERO)
                 .compilePassRate(BigDecimal.ZERO)
                 .testPassRate(BigDecimal.ZERO)

@@ -20,6 +20,12 @@ public class CodeOpsEvalCaseReport {
     private String taskId;
     private String taskType;
     private String scopeType;
+    private String fixStrategy;
+    private String scopeDecision;
+    private String rootCauseLocationType;
+    private Map<String, Object> localizationDecision;
+    private CodeOpsLocalizationEvalResult localizationEval;
+    private List<String> targetFiles;
     private List<String> targetMethods;
     private List<String> selectedSkills;
     private int stepCount;

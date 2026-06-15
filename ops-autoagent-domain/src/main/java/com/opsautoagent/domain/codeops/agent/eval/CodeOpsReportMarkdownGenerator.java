@@ -23,6 +23,11 @@ public class CodeOpsReportMarkdownGenerator {
         CodeOpsEvalMetricSummary m = report.getSummaryMetrics();
         if (m != null) {
             md.append("| Scope Accuracy | ").append(pct(m.getScopeAccuracy())).append(" |\n");
+            md.append("| Localization Decision Accuracy | ").append(pct(m.getLocalizationDecisionAccuracy())).append(" |\n");
+            md.append("| Localization Target File Hit Rate | ").append(pct(m.getLocalizationTargetFileHitRate())).append(" |\n");
+            md.append("| Localization Target Method Hit Rate | ").append(pct(m.getLocalizationTargetMethodHitRate())).append(" |\n");
+            md.append("| Localization Fix Strategy Accuracy | ").append(pct(m.getLocalizationFixStrategyAccuracy())).append(" |\n");
+            md.append("| Localization Scope Decision Accuracy | ").append(pct(m.getLocalizationScopeDecisionAccuracy())).append(" |\n");
             md.append("| Patch Apply Rate | ").append(pct(m.getPatchApplyRate())).append(" |\n");
             md.append("| Compile Pass Rate | ").append(pct(m.getCompilePassRate())).append(" |\n");
             md.append("| Test Pass Rate | ").append(pct(m.getTestPassRate())).append(" |\n");
@@ -97,8 +102,36 @@ public class CodeOpsReportMarkdownGenerator {
         md.append("## Repair Scope\n\n```json\n");
         md.append("{\n");
         md.append("  \"scopeType\": \"").append(c.getScopeType()).append("\",\n");
+        md.append("  \"fixStrategy\": \"").append(c.getFixStrategy() == null ? "" : c.getFixStrategy()).append("\",\n");
+        md.append("  \"scopeDecision\": \"").append(c.getScopeDecision() == null ? "" : c.getScopeDecision()).append("\",\n");
+        md.append("  \"rootCauseLocationType\": \"").append(c.getRootCauseLocationType() == null ? "" : c.getRootCauseLocationType()).append("\",\n");
         md.append("  \"targetMethods\": ").append(toJsonArray(c.getTargetMethods())).append("\n");
         md.append("}\n```\n\n");
+
+        if (c.getLocalizationDecision() != null && !c.getLocalizationDecision().isEmpty()) {
+            md.append("## Localization Decision\n\n");
+            md.append("- **fixStrategy:** ").append(c.getFixStrategy()).append("\n");
+            md.append("- **scopeDecision:** ").append(c.getScopeDecision()).append("\n");
+            md.append("- **rootCauseLocationType:** ").append(c.getRootCauseLocationType()).append("\n");
+            md.append("- **directEvidenceFiles:** ").append(c.getLocalizationDecision().getOrDefault("directEvidenceFiles", List.of())).append("\n");
+            md.append("- **rootCauseCandidateFiles:** ").append(c.getLocalizationDecision().getOrDefault("rootCauseCandidateFiles", List.of())).append("\n");
+            md.append("- **doNotModifyFiles:** ").append(c.getLocalizationDecision().getOrDefault("doNotModifyFiles", List.of())).append("\n\n");
+        }
+        if (c.getLocalizationEval() != null) {
+            CodeOpsLocalizationEvalResult eval = c.getLocalizationEval();
+            md.append("## Localization Eval\n\n");
+            md.append("- **score:** ").append(pct(eval.getScore())).append("\n");
+            md.append("- **targetFileMatched:** ").append(eval.getTargetFileMatched()).append("\n");
+            md.append("- **targetMethodMatched:** ").append(eval.getTargetMethodMatched()).append("\n");
+            md.append("- **fixStrategyMatched:** ").append(eval.getFixStrategyMatched()).append("\n");
+            md.append("- **scopeDecisionMatched:** ").append(eval.getScopeDecisionMatched()).append("\n");
+            md.append("- **expectedTargetFiles:** ").append(eval.getExpectedTargetFiles()).append("\n");
+            md.append("- **actualTargetFiles:** ").append(eval.getActualTargetFiles()).append("\n");
+            md.append("- **missingTargetFiles:** ").append(eval.getMissingTargetFiles()).append("\n");
+            md.append("- **expectedTargetMethods:** ").append(eval.getExpectedTargetMethods()).append("\n");
+            md.append("- **actualTargetMethods:** ").append(eval.getActualTargetMethods()).append("\n");
+            md.append("- **missingTargetMethods:** ").append(eval.getMissingTargetMethods()).append("\n\n");
+        }
 
         md.append("## Agent Steps\n\n");
         md.append("| Step | Skill | Status | Summary |\n|---|---|---|---|\n");
