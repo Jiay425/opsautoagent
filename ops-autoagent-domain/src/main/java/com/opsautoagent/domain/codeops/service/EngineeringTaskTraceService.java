@@ -258,7 +258,8 @@ public class EngineeringTaskTraceService {
                 "localizationConfidence", "missingEvidence", "fixStrategy", "scopeDecisionType",
                 "rootCauseLocationType", "directEvidenceFiles", "relatedFiles", "rootCauseCandidateFiles",
                 "doNotModifyFiles", "candidateScope", "localizationDecision", "codeLocalization",
-                "preLoopCodeContextPack", "evidenceGraphSummary", "evidenceGraphRankedCodeNodes", "evidenceGraph"));
+                "localizationQuality", "localizationReflection", "localizationReflectionRequired",
+                "localizationBlocking", "preLoopCodeContextPack", "evidenceGraphSummary", "evidenceGraphRankedCodeNodes", "evidenceGraph"));
         artifacts.put("patch", pick(raw, "patchGenerated", "llmGenerated", "patchApply", "patchScopeGuard", "patchSandbox", "patchQuality", "compileGate", "changedFiles"));
         artifacts.put("tests", pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults", "testFailureType", "failedTestFiles", "failedAssertions"));
         artifacts.put("releaseRisk", pick(raw, "releaseRiskReport", "riskPoints", "observationMetrics",
@@ -280,7 +281,9 @@ public class EngineeringTaskTraceService {
                     "recommendedTests", "strategyType", "fixStrategy", "scopeDecisionType",
                     "rootCauseLocationType", "directEvidenceFiles", "relatedFiles", "rootCauseCandidateFiles",
                     "doNotModifyFiles", "candidateScope", "localizationDecision", "codeLocalization",
-                    "preLoopCodeContextPack", "stopReason", "evidenceGraphSummary", "evidenceGraphRankedCodeNodes", "evidenceGraph");
+                    "localizationQuality", "localizationReflection", "localizationReflectionRequired",
+                    "localizationBlocking", "preLoopCodeContextPack", "stopReason",
+                    "evidenceGraphSummary", "evidenceGraphRankedCodeNodes", "evidenceGraph");
             case "knowledge_rag" -> pick(raw, "knowledgeMatches", "runbookMatches");
             case "code_repair" -> pick(raw, "llmGenerated", "patchGenerated", "rootCause", "patchApply", "patchScopeGuard", "patchSandbox", "patchQuality", "compileGate");
             case "test_verification" -> pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults",
@@ -304,6 +307,10 @@ public class EngineeringTaskTraceService {
         putIfPresent(highlights, "preLoopCodeContextPack", rawEvidence.get("preLoopCodeContextPack"));
         putIfPresent(highlights, "localizationDecision", rawEvidence.get("localizationDecision"));
         putIfPresent(highlights, "codeLocalization", rawEvidence.get("codeLocalization"));
+        putIfPresent(highlights, "localizationQuality", rawEvidence.get("localizationQuality"));
+        putIfPresent(highlights, "localizationReflection", rawEvidence.get("localizationReflection"));
+        putIfPresent(highlights, "localizationReflectionRequired", rawEvidence.get("localizationReflectionRequired"));
+        putIfPresent(highlights, "localizationBlocking", rawEvidence.get("localizationBlocking"));
         putIfPresent(highlights, "codeSearchMatches", rawEvidence.get("codeSearchMatches"));
         putIfPresent(highlights, "findings", rawEvidence.get("findings"));
         putIfPresent(highlights, "baselineFindings", rawEvidence.get("baselineFindings"));

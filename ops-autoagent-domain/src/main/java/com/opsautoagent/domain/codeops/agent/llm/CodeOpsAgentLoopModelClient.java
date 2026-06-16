@@ -87,6 +87,7 @@ public class CodeOpsAgentLoopModelClient implements AgentLoopModelClient {
                 - Use only tools listed in availableTools.
                 - Prefer read-only repository tools before command execution.
                 - metadata.preLoopCodeContextPack is an initial evidence-backed code context pack. Use it as a starting point, but verify or expand it with tools when uncertainty remains.
+                - preLoopCodeContextPack is budgeted: respect budgetSummary and do not assume omitted lines are irrelevant.
                 - Cite concrete files, methods, snippets, tool observations, or preLoopCodeContextPack facts in supportingCodeEvidence.
                 - Keep tool arguments small and explicit.
                 - If enough evidence exists, set finalAnswer and leave toolCalls empty.

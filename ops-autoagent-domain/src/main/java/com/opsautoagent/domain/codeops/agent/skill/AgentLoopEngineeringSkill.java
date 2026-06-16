@@ -40,6 +40,8 @@ public class AgentLoopEngineeringSkill implements EngineeringSkill {
     private static final Pattern CLASS_NAME_PATTERN = Pattern.compile("\\b([A-Z][A-Za-z0-9_]{2,})\\b");
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\.([a-z][A-Za-z0-9_]{2,})\\b");
     private static final Pattern LOCATION_PATTERN = Pattern.compile("([^\\s:]+\\.(?:java|xml|yml|yaml|properties)):(\\d+)");
+    private static final int DEFAULT_CONTEXT_BUDGET_CHARS = 28_000;
+    private static final int DEFAULT_SNIPPET_BUDGET_CHARS = 4_000;
 
     private final AgentLoopService agentLoopService;
     private final CodeOpsAgentLoopModelClient modelClient;
@@ -84,6 +86,12 @@ public class AgentLoopEngineeringSkill implements EngineeringSkill {
                 .build(), resolveModelClient(task));
         Map<String, Object> rawOutput = buildRawOutput(result);
         rawOutput.put("preLoopCodeContextPack", preLoopCodeContextPack);
+        Map<String, Object> localizationQuality = localizationQuality(rawOutput, result);
+        Map<String, Object> localizationReflection = localizationReflection(rawOutput, localizationQuality, preLoopCodeContextPack);
+        rawOutput.put("localizationQuality", localizationQuality);
+        rawOutput.put("localizationReflection", localizationReflection);
+        rawOutput.put("localizationReflectionRequired", Boolean.TRUE.equals(localizationReflection.get("required")));
+        rawOutput.put("localizationBlocking", Boolean.TRUE.equals(localizationReflection.get("blocking")));
         return EngineeringSkillResultEntity.builder()
                 .skillId(SKILL_ID)
                 .status(result.isSuccess() ? "SUCCESS" : value(result.getStatus(), "FAILED"))
@@ -261,7 +269,7 @@ public class AgentLoopEngineeringSkill implements EngineeringSkill {
                         .distinct()
                         .toList())
                 .build();
-        return codeContextPackForPrompt(pack, searchTerms, searchMatches);
+        return codeContextPackForPrompt(pack, searchTerms, searchMatches, resolveContextBudget(task));
     }
 
     private List<String> collectCodeSearchTerms(EngineeringTaskEntity task) {
@@ -494,9 +502,14 @@ public class AgentLoopEngineeringSkill implements EngineeringSkill {
 
     private Map<String, Object> codeContextPackForPrompt(CodeContextPackEntity pack,
                                                          List<String> searchTerms,
-                                                         List<String> searchMatches) {
+                                                         List<String> searchMatches,
+                                                         Map<String, Object> contextBudget) {
         Map<String, Object> result = new LinkedHashMap<>();
+        ContextBudgetState budget = new ContextBudgetState(
+                intValue(contextBudget.get("maxPromptChars"), DEFAULT_CONTEXT_BUDGET_CHARS),
+                intValue(contextBudget.get("maxSnippetChars"), DEFAULT_SNIPPET_BUDGET_CHARS));
         result.put("strategy", pack.getStrategy());
+        result.put("contextBudget", contextBudget);
         result.put("searchTerms", searchTerms == null ? List.of() : searchTerms);
         result.put("primaryFiles", pack.getPrimaryFiles() == null ? List.of() : pack.getPrimaryFiles());
         result.put("candidateFiles", pack.getCandidateFiles() == null ? List.of() : pack.getCandidateFiles());
@@ -508,21 +521,110 @@ public class AgentLoopEngineeringSkill implements EngineeringSkill {
         result.put("totalSnippetCount", pack.getTotalSnippetCount());
         result.put("missingFiles", pack.getMissingFiles() == null ? List.of() : pack.getMissingFiles());
         result.put("searchMatchesPreview", searchMatches == null ? List.of() : searchMatches.stream().limit(12).toList());
-        result.put("snippets", pack.getSnippets() == null ? List.of() : pack.getSnippets().stream()
-                .filter(snippet -> Boolean.TRUE.equals(snippet.getAvailable()))
-                .limit(12)
-                .map(this::snippetForPrompt)
-                .toList());
+        result.put("snippets", budgetedSnippets(pack, budget));
+        result.put("budgetSummary", budget.summary());
         return result;
     }
 
-    private Map<String, Object> snippetForPrompt(CodeSnippetEntity snippet) {
+    private List<Map<String, Object>> budgetedSnippets(CodeContextPackEntity pack, ContextBudgetState budget) {
+        if (pack.getSnippets() == null || pack.getSnippets().isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        List<CodeSnippetEntity> ordered = orderSnippetsForBudget(pack);
+        for (CodeSnippetEntity snippet : ordered) {
+            if (!Boolean.TRUE.equals(snippet.getAvailable())) {
+                continue;
+            }
+            Map<String, Object> item = snippetForPrompt(snippet, budget, snippetRole(pack, snippet.getFilePath()));
+            if (!item.isEmpty()) {
+                result.add(item);
+            }
+            if (budget.remainingChars <= 0) {
+                break;
+            }
+        }
+        return result;
+    }
+
+    private List<CodeSnippetEntity> orderSnippetsForBudget(CodeContextPackEntity pack) {
+        List<CodeSnippetEntity> snippets = new ArrayList<>(pack.getSnippets());
+        snippets.sort((left, right) -> Integer.compare(
+                snippetPriority(pack, left.getFilePath()),
+                snippetPriority(pack, right.getFilePath())));
+        return snippets;
+    }
+
+    private int snippetPriority(CodeContextPackEntity pack, String filePath) {
+        String normalized = normalizeFilePath(filePath);
+        if (containsFile(pack.getPrimaryFiles(), normalized)) return 1;
+        if (containsFile(pack.getCandidateFiles(), normalized)) return 2;
+        if (containsFile(pack.getSupportFiles(), normalized)) return 3;
+        if (containsFile(pack.getRelatedTests(), normalized)) return 4;
+        if (containsFile(pack.getBuildFiles(), normalized)) return 5;
+        return 9;
+    }
+
+    private String snippetRole(CodeContextPackEntity pack, String filePath) {
+        String normalized = normalizeFilePath(filePath);
+        if (containsFile(pack.getPrimaryFiles(), normalized)) return "PRIMARY";
+        if (containsFile(pack.getCandidateFiles(), normalized)) return "CANDIDATE";
+        if (containsFile(pack.getSupportFiles(), normalized)) return "SUPPORT";
+        if (containsFile(pack.getRelatedTests(), normalized)) return "TEST";
+        if (containsFile(pack.getBuildFiles(), normalized)) return "BUILD_OR_CONFIG";
+        return "EXTRA";
+    }
+
+    private boolean containsFile(List<String> files, String target) {
+        if (files == null || target == null) {
+            return false;
+        }
+        return files.stream().map(this::normalizeFilePath).anyMatch(target::equals);
+    }
+
+    private Map<String, Object> snippetForPrompt(CodeSnippetEntity snippet,
+                                                 ContextBudgetState budget,
+                                                 String role) {
+        if (budget.remainingChars <= 0) {
+            budget.truncatedSnippetCount++;
+            return Map.of();
+        }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("filePath", snippet.getFilePath());
+        result.put("role", role);
         result.put("startLine", snippet.getStartLine());
         result.put("endLine", snippet.getEndLine());
-        result.put("lines", limitSnippetLines(snippet.getLines(), 90, 9_000));
+        List<String> lines = limitSnippetLines(snippet.getLines(), 90, Math.min(budget.maxSnippetChars, budget.remainingChars));
+        int chars = lines.stream().mapToInt(line -> line == null ? 0 : line.length()).sum();
+        boolean truncated = snippet.getLines() != null && lines.size() < snippet.getLines().size();
+        result.put("lines", lines);
+        result.put("truncated", truncated);
+        budget.remainingChars -= chars;
+        budget.includedSnippetCount++;
+        budget.includedChars += chars;
+        if (truncated) {
+            budget.truncatedSnippetCount++;
+        }
         return result;
+    }
+
+    private Map<String, Object> resolveContextBudget(EngineeringTaskEntity task) {
+        Map<String, Object> budget = new LinkedHashMap<>();
+        int maxPromptChars = DEFAULT_CONTEXT_BUDGET_CHARS;
+        int maxSnippetChars = DEFAULT_SNIPPET_BUDGET_CHARS;
+        if (task != null && task.getContext() != null) {
+            maxPromptChars = intValue(task.getContext().get("codeContextMaxPromptChars"), maxPromptChars);
+            maxSnippetChars = intValue(task.getContext().get("codeContextMaxSnippetChars"), maxSnippetChars);
+        }
+        budget.put("maxPromptChars", Math.max(8_000, Math.min(maxPromptChars, 80_000)));
+        budget.put("maxSnippetChars", Math.max(1_000, Math.min(maxSnippetChars, 12_000)));
+        budget.put("policy", List.of(
+                "PRIMARY source snippets first",
+                "candidate root-cause snippets second",
+                "same-package dependencies third",
+                "related tests and build/config context last",
+                "large snippets are truncated with budgetSummary recorded"));
+        return budget;
     }
 
     private Map<String, Object> parseStructuredFinalAnswer(String finalAnswer) {
@@ -720,6 +822,144 @@ public class AgentLoopEngineeringSkill implements EngineeringSkill {
         return decision;
     }
 
+    private Map<String, Object> localizationQuality(Map<String, Object> rawOutput, AgentLoopResult result) {
+        Map<String, Object> quality = new LinkedHashMap<>();
+        List<String> issues = new ArrayList<>();
+        List<String> strengths = new ArrayList<>();
+        String confidence = stringValue(rawOutput.get("localizationConfidence")).toUpperCase(Locale.ROOT);
+        String fixStrategy = stringValue(rawOutput.get("fixStrategy")).toUpperCase(Locale.ROOT);
+        String scopeDecision = stringValue(rawOutput.get("scopeDecisionType")).toUpperCase(Locale.ROOT);
+        List<String> targetFiles = listValue(rawOutput.get("targetFiles"));
+        List<String> targetMethods = listValue(rawOutput.get("targetMethods"));
+        List<String> rootCauseFiles = listValue(rawOutput.get("rootCauseCandidateFiles"));
+        List<String> directEvidenceFiles = listValue(rawOutput.get("directEvidenceFiles"));
+        List<String> supportingCodeEvidence = listValue(rawOutput.get("supportingCodeEvidence"));
+        List<String> missingEvidence = listValue(rawOutput.get("missingEvidence"));
+
+        if ("HIGH".equals(confidence)) {
+            strengths.add("localization confidence is HIGH");
+        } else if ("LOW".equals(confidence) || confidence.isBlank()) {
+            issues.add("localization confidence is not strong enough");
+        }
+        if (targetFiles.isEmpty() && "CODE_FIX".equals(fixStrategy)) {
+            issues.add("CODE_FIX selected but targetFiles is empty");
+        } else if (!targetFiles.isEmpty()) {
+            strengths.add("targetFiles present");
+        }
+        if (targetMethods.isEmpty() && "STRICT_SINGLE_METHOD".equals(scopeDecision)) {
+            issues.add("STRICT_SINGLE_METHOD selected but targetMethods is empty");
+        } else if (!targetMethods.isEmpty()) {
+            strengths.add("targetMethods present");
+        }
+        if ("CODE_FIX".equals(fixStrategy) && rootCauseFiles.isEmpty()) {
+            issues.add("CODE_FIX selected but rootCauseCandidateFiles is empty");
+        }
+        if (directEvidenceFiles.isEmpty() && rootCauseFiles.size() > 1) {
+            issues.add("multiple root-cause candidates without directEvidenceFiles");
+        }
+        if (supportingCodeEvidence.isEmpty() && "CODE_FIX".equals(fixStrategy)) {
+            issues.add("CODE_FIX selected without supportingCodeEvidence");
+        }
+        if (!missingEvidence.isEmpty()) {
+            issues.add("missingEvidence is not empty: " + String.join("; ", missingEvidence));
+        }
+        if (result != null && "MAX_TURNS_REACHED".equalsIgnoreCase(result.getStatus())) {
+            issues.add("agent loop reached max turns before final localization");
+        }
+        boolean shouldEnterRepair = Boolean.TRUE.equals(rawOutput.get("shouldEnterCodeRepair"));
+        if (!"CODE_FIX".equals(fixStrategy) && shouldEnterRepair) {
+            issues.add("non-code fix strategy still allows code repair");
+        }
+
+        int score = Math.max(0, 100 - issues.size() * 18);
+        if ("HIGH".equals(confidence)) {
+            score = Math.min(100, score + 8);
+        }
+        if (!supportingCodeEvidence.isEmpty()) {
+            score = Math.min(100, score + 6);
+        }
+        quality.put("score", score);
+        quality.put("confidence", confidence);
+        quality.put("issues", issues);
+        quality.put("strengths", strengths);
+        quality.put("shouldReflect", score < 75 || !missingEvidence.isEmpty() || "NEED_MORE_EVIDENCE".equals(fixStrategy));
+        quality.put("shouldBlockCodeRepair", "CODE_FIX".equals(fixStrategy)
+                && (targetFiles.isEmpty() || rootCauseFiles.isEmpty() || score < 45));
+        return quality;
+    }
+
+    private Map<String, Object> localizationReflection(Map<String, Object> rawOutput,
+                                                       Map<String, Object> quality,
+                                                       Map<String, Object> preLoopCodeContextPack) {
+        boolean required = Boolean.TRUE.equals(quality.get("shouldReflect"));
+        boolean blocking = Boolean.TRUE.equals(quality.get("shouldBlockCodeRepair"));
+        List<String> issues = listValue(quality.get("issues"));
+        Map<String, Object> reflection = new LinkedHashMap<>();
+        reflection.put("required", required);
+        reflection.put("blocking", blocking);
+        reflection.put("reason", required
+                ? "localization quality gate found unresolved evidence or low confidence"
+                : "localization quality is sufficient");
+        reflection.put("issues", issues);
+        reflection.put("mustVerify", localizationMustVerify(rawOutput, issues));
+        reflection.put("suggestedToolCalls", required ? localizationSuggestedToolCalls(rawOutput, preLoopCodeContextPack) : List.of());
+        reflection.put("nextAttemptConstraints", required ? List.of(
+                "Do not generate a patch until rootCauseCandidateFiles and fixStrategy are justified by code or observability evidence.",
+                "If stack top is only a caller, expand through direct callees before deciding repair scope.",
+                "If the incident is runtime/config/capacity/dependency, return NO_CODE_FIX or NEED_MORE_EVIDENCE instead of forcing CODE_FIX.") : List.of());
+        return reflection;
+    }
+
+    private List<String> localizationMustVerify(Map<String, Object> rawOutput, List<String> issues) {
+        List<String> mustVerify = new ArrayList<>();
+        String fixStrategy = stringValue(rawOutput.get("fixStrategy"));
+        String scopeDecision = stringValue(rawOutput.get("scopeDecisionType"));
+        mustVerify.add("fixStrategy=" + value(fixStrategy, "UNKNOWN"));
+        mustVerify.add("scopeDecision=" + value(scopeDecision, "UNKNOWN"));
+        if (issues.stream().anyMatch(issue -> issue.contains("targetFiles") || issue.contains("rootCauseCandidateFiles"))) {
+            mustVerify.add("root cause source file and whether stack-top file is only a caller");
+        }
+        if (issues.stream().anyMatch(issue -> issue.contains("targetMethods"))) {
+            mustVerify.add("method-level repair boundary");
+        }
+        if (issues.stream().anyMatch(issue -> issue.contains("supportingCodeEvidence"))) {
+            mustVerify.add("code fact supporting the selected root cause");
+        }
+        if (issues.stream().anyMatch(issue -> issue.contains("missingEvidence"))) {
+            mustVerify.add("missing evidence listed by the first localization pass");
+        }
+        return mustVerify.stream().distinct().toList();
+    }
+
+    private List<Map<String, Object>> localizationSuggestedToolCalls(Map<String, Object> rawOutput,
+                                                                     Map<String, Object> preLoopCodeContextPack) {
+        List<Map<String, Object>> calls = new ArrayList<>();
+        List<String> targetFiles = mergeDistinct(
+                listValue(rawOutput.get("targetFiles")),
+                listValue(rawOutput.get("rootCauseCandidateFiles")),
+                listValue(rawOutput.get("directEvidenceFiles")));
+        for (String file : targetFiles.stream().limit(3).toList()) {
+            calls.add(Map.of(
+                    "toolName", "repo.read_file_snippet",
+                    "arguments", Map.of("filePath", file, "centerLine", 1, "radius", 260),
+                    "purpose", "verify full candidate file before repair scope is finalized"));
+        }
+        List<String> searchTerms = listValue(preLoopCodeContextPack == null ? null : preLoopCodeContextPack.get("searchTerms"));
+        if (!searchTerms.isEmpty()) {
+            calls.add(Map.of(
+                    "toolName", "repo.search_text",
+                    "arguments", Map.of("queries", searchTerms.stream().limit(6).toList(), "maxMatches", 30),
+                    "purpose", "re-check alert-derived search terms and caller/callee evidence"));
+        }
+        if (calls.isEmpty()) {
+            calls.add(Map.of(
+                    "toolName", "repo.search_text",
+                    "arguments", Map.of("queries", List.of("exception", "requestId", "timeout", "error"), "maxMatches", 30),
+                    "purpose", "collect first-pass repository evidence because localization has no usable target"));
+        }
+        return calls;
+    }
+
     private boolean booleanValue(Object value, boolean defaultValue) {
         if (value instanceof Boolean bool) {
             return bool;
@@ -798,6 +1038,20 @@ public class AgentLoopEngineeringSkill implements EngineeringSkill {
         }
     }
 
+    private int intValue(Object value, int defaultValue) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value == null) {
+            return defaultValue;
+        }
+        try {
+            return Integer.parseInt(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
     private String simpleNameWithoutJava(String filePath) {
         String normalized = normalizeFilePath(filePath);
         if (isBlank(normalized) || !normalized.endsWith(".java")) {
@@ -833,6 +1087,32 @@ public class AgentLoopEngineeringSkill implements EngineeringSkill {
     }
 
     private record Location(String filePath, int line, String raw) {
+    }
+
+    private static final class ContextBudgetState {
+        private final int maxPromptChars;
+        private final int maxSnippetChars;
+        private int remainingChars;
+        private int includedChars;
+        private int includedSnippetCount;
+        private int truncatedSnippetCount;
+
+        private ContextBudgetState(int maxPromptChars, int maxSnippetChars) {
+            this.maxPromptChars = maxPromptChars;
+            this.maxSnippetChars = maxSnippetChars;
+            this.remainingChars = maxPromptChars;
+        }
+
+        private Map<String, Object> summary() {
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("maxPromptChars", maxPromptChars);
+            summary.put("maxSnippetChars", maxSnippetChars);
+            summary.put("includedChars", includedChars);
+            summary.put("remainingChars", Math.max(0, remainingChars));
+            summary.put("includedSnippetCount", includedSnippetCount);
+            summary.put("truncatedSnippetCount", truncatedSnippetCount);
+            return summary;
+        }
     }
 
 }
