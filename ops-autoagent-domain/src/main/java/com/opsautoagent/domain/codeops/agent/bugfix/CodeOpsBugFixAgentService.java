@@ -5,6 +5,7 @@ import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.opsautoagent.domain.codeops.agent.llm.CodeOpsCompatibleChatClient;
 import com.opsautoagent.domain.codeops.agent.llm.ModelRouter;
+import com.opsautoagent.domain.codeops.agent.patch.ExactReplaceBlockPatchEntity;
 import com.opsautoagent.domain.codeops.agent.patch.FileRewritePatchEntity;
 import com.opsautoagent.domain.codeops.agent.recovery.ErrorRecoveryPolicy;
 import com.opsautoagent.domain.codeops.agent.recovery.RecoveryDecision;
@@ -93,6 +94,7 @@ public class CodeOpsBugFixAgentService {
                 .reasoning(List.of())
                 .unifiedDiffPatch("")
                 .fileRewrites(List.of())
+                .exactReplaceBlocks(List.of())
                 .testSuggestions(List.of())
                 .mavenCommands(List.of())
                 .testUnifiedDiffPatch("")
@@ -142,6 +144,7 @@ public class CodeOpsBugFixAgentService {
                 .diagnosisClues(input.getDiagnosisClues())
                 .suspiciousLocations(input.getSuspiciousLocations())
                 .repairScope(input.getRepairScope())
+                .repairPlan(input.getRepairPlan())
                 .codeSearchMatches(input.getCodeSearchMatches())
                 .codeSnippets(limit(input.getCodeSnippets(), maxSnippets))
                 .codeContextPack(input.getCodeContextPack())
@@ -174,6 +177,7 @@ public class CodeOpsBugFixAgentService {
                 .scopeDecision(mapObject(object.getJSONObject("scopeDecision")))
                 .unifiedDiffPatch(object.getString("unifiedDiffPatch"))
                 .fileRewrites(fileRewrites(object.getJSONArray("fileRewrites")))
+                .exactReplaceBlocks(exactReplaceBlocks(object.getJSONArray("exactReplaceBlocks")))
                 .testSuggestions(stringList(object.getJSONArray("testSuggestions")))
                 .mavenCommands(stringList(object.getJSONArray("mavenCommands")))
                 .testUnifiedDiffPatch(object.getString("testUnifiedDiffPatch"))
@@ -203,6 +207,7 @@ public class CodeOpsBugFixAgentService {
         object.put("scopeDecision", structuralExtractObject(content, "scopeDecision"));
         // Array of objects — the critical one: extract fileRewrites
         object.put("fileRewrites", structuralExtractFileRewrites(content, "fileRewrites"));
+        object.put("exactReplaceBlocks", structuralExtractExactReplaceBlocks(content, "exactReplaceBlocks"));
         object.put("testFileRewrites", structuralExtractFileRewrites(content, "testFileRewrites"));
 
         return buildOutput(object, content == null ? "" : content);
@@ -265,6 +270,37 @@ public class CodeOpsBugFixAgentService {
             JSONObject entry = new JSONObject();
             entry.put("filePath", regexExtract(objStr, "filePath"));
             entry.put("newContent", regexExtractMultiline(objStr, "newContent"));
+            entry.put("reasoning", regexExtract(objStr, "reasoning"));
+            if (entry.getString("filePath") != null && !entry.getString("filePath").isBlank()) {
+                array.add(entry);
+            }
+            pos = objEnd + 1;
+        }
+        return array;
+    }
+
+    private JSONArray structuralExtractExactReplaceBlocks(String content, String fieldName) {
+        JSONArray array = new JSONArray();
+        if (content == null || content.isBlank()) return array;
+        int fieldStart = content.indexOf("\"" + fieldName + "\"");
+        if (fieldStart < 0) return array;
+        int arrayStart = content.indexOf("[", fieldStart);
+        if (arrayStart < 0) return array;
+        int arrayEnd = findMatchingBracket(content, arrayStart);
+        if (arrayEnd < 0) return array;
+        String arrayContent = content.substring(arrayStart + 1, arrayEnd).trim();
+        if (arrayContent.isEmpty()) return array;
+        int pos = 0;
+        while (pos < arrayContent.length()) {
+            int objStart = arrayContent.indexOf("{", pos);
+            if (objStart < 0) break;
+            int objEnd = findMatchingBrace(arrayContent, objStart);
+            if (objEnd < 0) break;
+            String objStr = arrayContent.substring(objStart, objEnd + 1);
+            JSONObject entry = new JSONObject();
+            entry.put("filePath", regexExtract(objStr, "filePath"));
+            entry.put("oldText", regexExtractMultiline(objStr, "oldText"));
+            entry.put("newText", regexExtractMultiline(objStr, "newText"));
             entry.put("reasoning", regexExtract(objStr, "reasoning"));
             if (entry.getString("filePath") != null && !entry.getString("filePath").isBlank()) {
                 array.add(entry);
@@ -341,6 +377,26 @@ public class CodeOpsBugFixAgentService {
             values.add(FileRewritePatchEntity.builder()
                     .filePath(object.getString("filePath"))
                     .newContent(object.getString("newContent"))
+                    .reasoning(object.getString("reasoning"))
+                    .build());
+        }
+        return values;
+    }
+
+    private List<ExactReplaceBlockPatchEntity> exactReplaceBlocks(JSONArray array) {
+        if (array == null || array.isEmpty()) {
+            return List.of();
+        }
+        List<ExactReplaceBlockPatchEntity> values = new ArrayList<>();
+        for (int i = 0; i < array.size(); i++) {
+            JSONObject object = array.getJSONObject(i);
+            if (object == null || object.getString("filePath") == null || object.getString("filePath").isBlank()) {
+                continue;
+            }
+            values.add(ExactReplaceBlockPatchEntity.builder()
+                    .filePath(object.getString("filePath"))
+                    .oldText(object.getString("oldText"))
+                    .newText(object.getString("newText") == null ? "" : object.getString("newText"))
                     .reasoning(object.getString("reasoning"))
                     .build());
         }

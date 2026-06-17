@@ -43,6 +43,8 @@ public class CodeOpsBugFixAgentInput {
 
     private Map<String, Object> repairScope;
 
+    private Map<String, Object> repairPlan;
+
     private List<Object> reflectionFailures;
 
     private List<Object> reflectionDiagnostics;

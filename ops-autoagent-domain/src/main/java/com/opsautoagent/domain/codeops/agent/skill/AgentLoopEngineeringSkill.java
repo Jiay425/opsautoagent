@@ -190,6 +190,7 @@ public class AgentLoopEngineeringSkill implements EngineeringSkill {
         output.put("negativeEvidence", listValue(structured.get("negativeEvidence")));
         output.put("reasoning", value(stringValue(structured.get("reasoning")), stringValue(structured.get("summary"))));
         output.put("candidateScope", candidateScope(structured, targetFiles, targetMethods, scopeDecision, fixStrategy));
+        output.put("repairPlan", repairPlan(structured, output, targetFiles, targetMethods, scopeDecision, fixStrategy));
         output.put("localizationDecision", localizationDecision(output));
         output.put("codeLocalization", localizationDecision(output));
         List<String> recommendedTests = listValue(structured.get("recommendedTests"));
@@ -815,11 +816,67 @@ public class AgentLoopEngineeringSkill implements EngineeringSkill {
                 "summary", "fixStrategy", "strategyType", "scopeDecisionType", "rootCauseLocationType",
                 "primarySymptomLocation", "directEvidenceFiles", "relatedFiles", "rootCauseCandidateFiles",
                 "doNotModifyFiles", "targetFiles", "targetMethods", "candidateFiles", "candidateMethods",
-                "suspectedRootCauseLocations", "candidateScope", "supportingCodeEvidence", "negativeEvidence",
+                "suspectedRootCauseLocations", "candidateScope", "repairPlan", "supportingCodeEvidence", "negativeEvidence",
                 "reasoning", "shouldEnterCodeRepair", "localizationConfidence", "missingEvidence")) {
             decision.put(key, output.getOrDefault(key, ""));
         }
         return decision;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> repairPlan(Map<String, Object> structured,
+                                           Map<String, Object> output,
+                                           List<String> targetFiles,
+                                           List<String> targetMethods,
+                                           String scopeDecision,
+                                           String fixStrategy) {
+        Map<String, Object> plan = new LinkedHashMap<>();
+        Object raw = structured.get("repairPlan");
+        if (raw instanceof Map<?, ?> map) {
+            map.forEach((key, value) -> plan.put(String.valueOf(key), value));
+        }
+        plan.putIfAbsent("intent", value(stringValue(structured.get("summary")),
+                "Investigate incident and decide whether a code repair is required"));
+        plan.put("fixStrategy", fixStrategy);
+        plan.put("scopeDecision", scopeDecision);
+        plan.putIfAbsent("rootCauseHypothesis", value(stringValue(structured.get("reasoning")),
+                stringValue(structured.get("summary"))));
+        plan.put("targetFiles", targetFiles == null ? List.of() : targetFiles);
+        plan.put("targetMethods", targetMethods == null ? List.of() : targetMethods);
+        plan.put("candidateFiles", output.getOrDefault("candidateFiles", List.of()));
+        plan.put("directEvidenceFiles", output.getOrDefault("directEvidenceFiles", List.of()));
+        plan.put("rootCauseCandidateFiles", output.getOrDefault("rootCauseCandidateFiles", List.of()));
+        plan.put("doNotModifyFiles", output.getOrDefault("doNotModifyFiles", List.of()));
+        plan.put("candidateScope", output.getOrDefault("candidateScope", Map.of()));
+        plan.put("shouldEnterCodeRepair", output.getOrDefault("shouldEnterCodeRepair", Boolean.FALSE));
+        plan.putIfAbsent("verificationPlan", defaultVerificationPlan(targetFiles, fixStrategy));
+        plan.putIfAbsent("riskPlan", defaultRiskPlan(fixStrategy, scopeDecision));
+        plan.put("missingEvidence", output.getOrDefault("missingEvidence", List.of()));
+        return plan;
+    }
+
+    private List<String> defaultVerificationPlan(List<String> targetFiles, String fixStrategy) {
+        if (!"CODE_FIX".equals(fixStrategy)) {
+            return List.of("No code patch verification required; validate operational mitigation and observability.");
+        }
+        List<String> plan = new ArrayList<>();
+        plan.add("Apply the smallest patch inside repairPlan target/candidate scope.");
+        plan.add("Run Maven compile gate after patch application.");
+        plan.add("Run related unit/regression tests for target files.");
+        if (targetFiles != null && targetFiles.size() > 1) {
+            plan.add("Verify cross-file behavior with a regression test covering the caller and root-cause component.");
+        }
+        return plan;
+    }
+
+    private List<String> defaultRiskPlan(String fixStrategy, String scopeDecision) {
+        if (!"CODE_FIX".equals(fixStrategy)) {
+            return List.of("Check runtime/config rollback path.", "Observe metrics/logs/traces for the affected endpoint.");
+        }
+        return List.of(
+                "Review patch minimality and modified method/file boundaries.",
+                "Check whether the selected scopeDecision=" + value(scopeDecision, "UNKNOWN") + " requires human approval.",
+                "Define post-release metrics, logs, and rollback trigger.");
     }
 
     private Map<String, Object> localizationQuality(Map<String, Object> rawOutput, AgentLoopResult result) {

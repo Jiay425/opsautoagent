@@ -260,8 +260,11 @@ public class EngineeringTaskTraceService {
                 "doNotModifyFiles", "candidateScope", "localizationDecision", "codeLocalization",
                 "localizationQuality", "localizationReflection", "localizationReflectionRequired",
                 "localizationBlocking", "preLoopCodeContextPack", "evidenceGraphSummary", "evidenceGraphRankedCodeNodes", "evidenceGraph"));
-        artifacts.put("patch", pick(raw, "patchGenerated", "llmGenerated", "patchApply", "patchScopeGuard", "patchSandbox", "patchQuality", "compileGate", "changedFiles"));
-        artifacts.put("tests", pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults", "testFailureType", "failedTestFiles", "failedAssertions"));
+        artifacts.put("patch", pick(raw, "repairPlan", "patchGenerated", "llmGenerated", "exactReplaceBlocks",
+                "exactReplaceApply", "patchApply", "patchScopeGuard", "patchSandbox", "patchQuality",
+                "compileGate", "failureDiagnostic", "changedFiles"));
+        artifacts.put("tests", pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults",
+                "failureDiagnostic", "testFailureType", "failedTestFiles", "failedAssertions"));
         artifacts.put("releaseRisk", pick(raw, "releaseRiskReport", "riskPoints", "observationMetrics",
                 "rollbackConcerns", "humanApprovalPoints", "codeReview", "reviewVerdict",
                 "qualityScore", "patchDecision", "patchFacts", "manualTakeoverRequired",
@@ -285,7 +288,9 @@ public class EngineeringTaskTraceService {
                     "localizationBlocking", "preLoopCodeContextPack", "stopReason",
                     "evidenceGraphSummary", "evidenceGraphRankedCodeNodes", "evidenceGraph");
             case "knowledge_rag" -> pick(raw, "knowledgeMatches", "runbookMatches");
-            case "code_repair" -> pick(raw, "llmGenerated", "patchGenerated", "rootCause", "patchApply", "patchScopeGuard", "patchSandbox", "patchQuality", "compileGate");
+            case "code_repair" -> pick(raw, "repairPlan", "llmGenerated", "patchGenerated", "rootCause",
+                    "exactReplaceBlocks", "exactReplaceApply", "patchApply", "patchScopeGuard",
+                    "patchSandbox", "patchQuality", "compileGate", "failureDiagnostic");
             case "test_verification" -> pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults",
                     "testExecutionAsync", "queuedBackgroundTasks", "backgroundToolTasks", "taskNotifications",
                     "testFailureType", "failedTestFiles");
@@ -320,6 +325,10 @@ public class EngineeringTaskTraceService {
         putIfPresent(highlights, "llmReviewError", rawEvidence.get("llmReviewError"));
         putIfPresent(highlights, "opsDiagnosis", rawEvidence.get("opsDiagnosis"));
         putIfPresent(highlights, "patchDraft", rawEvidence.get("patchDraft"));
+        putIfPresent(highlights, "repairPlan", rawEvidence.get("repairPlan"));
+        putIfPresent(highlights, "exactReplaceBlocks", rawEvidence.get("exactReplaceBlocks"));
+        putIfPresent(highlights, "exactReplaceApply", rawEvidence.get("exactReplaceApply"));
+        putIfPresent(highlights, "failureDiagnostic", rawEvidence.get("failureDiagnostic"));
         putIfPresent(highlights, "patchValidation", rawEvidence.get("patchValidation"));
         putIfPresent(highlights, "patchApply", rawEvidence.get("patchApply"));
         putIfPresent(highlights, "rootCause", rawEvidence.get("rootCause"));

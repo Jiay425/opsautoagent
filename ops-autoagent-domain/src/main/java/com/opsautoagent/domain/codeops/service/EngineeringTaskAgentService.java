@@ -15,6 +15,7 @@ import com.opsautoagent.domain.codeops.model.entity.TaskNotificationEntity;
 import com.opsautoagent.domain.codeops.agent.compaction.ContextCompactionService;
 import com.opsautoagent.domain.codeops.agent.memory.IncidentMemoryService;
 import com.opsautoagent.domain.codeops.agent.recovery.ErrorRecoveryPolicy;
+import com.opsautoagent.domain.codeops.agent.recovery.FailureDiagnosticParserService;
 import com.opsautoagent.domain.codeops.agent.recovery.RecoveryDecision;
 import com.opsautoagent.domain.codeops.agent.runtime.AgentExecutionContext;
 import com.opsautoagent.domain.codeops.agent.runtime.AgentRuntimeService;
@@ -52,6 +53,7 @@ public class EngineeringTaskAgentService {
 
     private final ContextCompactionService compactionService;
     private final ErrorRecoveryPolicy recoveryPolicy;
+    private final FailureDiagnosticParserService failureDiagnosticParserService;
     private final IncidentMemoryService incidentMemoryService;
     private final HumanApprovalGate humanApprovalGate;
     private final AgentRuntimeService agentRuntimeService;
@@ -65,6 +67,7 @@ public class EngineeringTaskAgentService {
                                        EngineeringToolGateway toolGateway,
                                        ContextCompactionService compactionService,
                                        ErrorRecoveryPolicy recoveryPolicy,
+                                       FailureDiagnosticParserService failureDiagnosticParserService,
                                        IncidentMemoryService incidentMemoryService,
                                        HumanApprovalGate humanApprovalGate,
                                        AgentRuntimeService agentRuntimeService,
@@ -75,6 +78,7 @@ public class EngineeringTaskAgentService {
         this.toolGateway = toolGateway;
         this.compactionService = compactionService;
         this.recoveryPolicy = recoveryPolicy;
+        this.failureDiagnosticParserService = failureDiagnosticParserService;
         this.incidentMemoryService = incidentMemoryService;
         this.humanApprovalGate = humanApprovalGate;
         this.agentRuntimeService = agentRuntimeService;
@@ -568,7 +572,16 @@ public class EngineeringTaskAgentService {
         failure.put("failedSkill", skillId);
         failure.put("summary", result.getSummary());
         failure.put("rawOutput", result.getRawOutput() == null ? Map.of() : result.getRawOutput());
-        Map<String, Object> diagnostic = buildReflectionDiagnostic(reflectionRound + 1, skillId, result);
+        Map<String, Object> diagnostic = failureDiagnosticParserService
+                .parse(reflectionRound + 1, skillId, result)
+                .toRawOutput();
+        Map<String, Object> rawWithDiagnostic = new LinkedHashMap<>();
+        if (result.getRawOutput() != null) {
+            rawWithDiagnostic.putAll(result.getRawOutput());
+        }
+        rawWithDiagnostic.put("failureDiagnostic", diagnostic);
+        result.setRawOutput(rawWithDiagnostic);
+        skillOutputs.put(skillId, rawWithDiagnostic);
         failure.put("diagnostic", diagnostic);
 
         List<Object> failures = new ArrayList<>();

@@ -57,7 +57,7 @@ public class CodeLocalizationAgentService {
                     .primarySuspectMethod("")
                     .candidateFiles(List.of())
                     .candidateMethods(List.of())
-                    .scopeSuggestion("NO_CODE_FIX")
+                    .scopeSuggestion("NEED_MORE_EVIDENCE")
                     .scopeConfidence("LOW")
                     .expandable(false)
                     .expansionBoundary(List.of())

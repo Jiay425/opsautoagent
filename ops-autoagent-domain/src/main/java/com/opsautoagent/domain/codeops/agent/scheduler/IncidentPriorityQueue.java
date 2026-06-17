@@ -83,6 +83,11 @@ public class IncidentPriorityQueue {
     public int getTotalEnqueued() { return totalEnqueued; }
     public int getTotalDispatched() { return totalDispatched; }
 
+    public List<Map<String, Object>> listQueued(int limit) {
+        int safeLimit = Math.max(1, Math.min(limit, 100));
+        return peekTopN(safeLimit).stream().map(QueuedIncident::toMap).toList();
+    }
+
     public Map<String, Object> getStats() {
         Map<String, Object> stats = new LinkedHashMap<>();
         stats.put("queueSize", queue.size());

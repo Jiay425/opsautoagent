@@ -248,8 +248,28 @@ public class IncidentScheduler {
         status.put("maxConcurrent", maxConcurrent);
         status.put("maxPerService", maxPerService);
         status.put("activeIncidents", dedupService.getActiveIncidents().size());
+        status.put("activeIncidentItems", dedupService.getActiveIncidents().stream()
+                .map(this::activeIncidentSummary)
+                .toList());
         status.put("queueStats", priorityQueue.getStats());
+        status.put("queuedIncidents", priorityQueue.listQueued(50));
         status.put("availableSlots", globalSemaphore.availablePermits());
+        status.put("runningSlots", Math.max(0, maxConcurrent - globalSemaphore.availablePermits()));
         return status;
+    }
+
+    private Map<String, Object> activeIncidentSummary(IncidentDedupService.AggregatedIncident incident) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("groupKey", incident.getGroupKey());
+        item.put("service", incident.getService());
+        item.put("alertName", incident.getAlertName());
+        item.put("severity", incident.getHighestSeverity());
+        item.put("alertCount", incident.getAlertCount());
+        item.put("summary", incident.getLatestSummary());
+        item.put("endpoints", incident.getAffectedEndpoints());
+        item.put("firstSeen", incident.getFirstSeen());
+        item.put("lastUpdate", incident.getLastUpdate());
+        item.put("status", "AGGREGATING");
+        return item;
     }
 }

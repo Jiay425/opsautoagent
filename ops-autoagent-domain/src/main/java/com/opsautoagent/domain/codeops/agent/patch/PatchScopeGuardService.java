@@ -133,7 +133,9 @@ public class PatchScopeGuardService {
                     .anyMatch(scopeFile -> normalizePath(scopeFile).equals(touched)
                             || normalizePath(scopeFile).endsWith("/" + touched)
                             || touched.endsWith("/" + normalizePath(scopeFile)));
-            if (!inScope && ("STRICT_SINGLE_METHOD".equals(scopeType) || "MULTI_METHOD".equals(scopeType))) {
+            if (!inScope && ("STRICT_SINGLE_METHOD".equals(scopeType)
+                    || "MULTI_METHOD".equals(scopeType)
+                    || "FULL_FILE".equals(scopeType))) {
                 violations.add("TOUCHED_FILE_OUT_OF_SCOPE: " + touched
                         + " not in repairScope.targetFiles " + scopeTargetFiles);
             }
@@ -173,7 +175,7 @@ public class PatchScopeGuardService {
         }
 
         // Verify repairScope targetMethods actually exist in the code
-        if (!scopeTargetMethods.isEmpty() && !isBlank(repositoryPath)) {
+        if (!"FULL_FILE".equals(scopeType) && !scopeTargetMethods.isEmpty() && !isBlank(repositoryPath)) {
             List<String> filesToCheck = touchedFiles.isEmpty() ? scopeTargetFiles : new ArrayList<>(touchedFiles);
             List<String> nonexistentMethods = verifyMethodsExist(repositoryPath,
                     filesToCheck, scopeTargetMethods);
@@ -407,6 +409,10 @@ public class PatchScopeGuardService {
                 violations.add("SCOPE_EXPANSION_OUT_OF_BOUND: final target file " + file
                         + " is outside candidateScope.targetFiles " + candidateFiles);
             }
+        }
+
+        if ("FULL_FILE".equals(String.valueOf(repairScope.getOrDefault("scopeType", "")))) {
+            return violations;
         }
 
         for (String method : scopeTargetMethods) {

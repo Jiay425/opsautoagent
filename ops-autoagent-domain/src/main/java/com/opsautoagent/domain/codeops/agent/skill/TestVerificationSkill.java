@@ -1067,7 +1067,7 @@ public class TestVerificationSkill implements EngineeringSkill {
         if (lower.contains("timed out") || lower.contains("timeout")) {
             return "TEST_TIMEOUT";
         }
-        if (lower.contains("assertion") || (lower.contains("expected") && lower.contains("actual"))
+        if (lower.contains("assertion") || (lower.contains("expected") && (lower.contains("actual") || lower.contains("but was")))
                 || lower.contains("failures:") || lower.contains("<<< failure!")) {
             return "TEST_ASSERTION_FAILED";
         }

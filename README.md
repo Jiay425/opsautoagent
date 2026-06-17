@@ -28,6 +28,16 @@ Alertmanager Webhook
 
 ### Key Features
 
+### Incident Command Center
+
+The project now includes a lightweight B-side dashboard for live Incident-to-Fix demonstration:
+
+```text
+http://127.0.0.1:8099/codeops-dashboard/index.html
+```
+
+It polls dashboard APIs every 2.5 seconds and shows service health, active alerts, scheduler queue, recent Incident-to-Fix tasks, stage progress, failure/blocking reasons, guardrails, patch/test/risk artifacts, and human-approval state. This makes alert storms and failed repairs visible instead of hiding them in JSON traces.
+
 ### Real Alertmanager Verification
 
 The framework has been verified with real Prometheus + Alertmanager firing alerts, not only fixture cases.
@@ -109,6 +119,8 @@ The eval harness now scores localization as a first-class stage, not only final 
 
 **Agent Loop Harness (Phase 5)** — Claude Code-style model-driven loop for CodeOps debugging. The model sees a typed tool catalog, emits JSON tool calls, `ToolPermissionGate` enforces policy, `EngineeringToolRegistry` dispatches allowed tools, and compact trace items are returned by default. A `dryRun` mock model verifies the loop locally without sending repository data to an external LLM.
 
+**Repair Loop Harness (Phase 6)** — Claude Code-style repair loop for patch attempts. The workflow now makes the localization output an explicit `repairPlan`, blocks unsafe repair when `localizationBlocking=true`, parses compile/test/patch/guard failures into `FailureDiagnostic`, and feeds `mustFix`, `mustAvoid`, failed files, commands, and next-attempt constraints into the next BugFix round. Patch attempts can use complete file rewrites or `exactReplaceBlocks`; exact replace failures become structured diagnostics that force the next round to re-read current source before editing.
+
 | Component | Responsibility |
 |-----------|----------------|
 | `AgentLoopService` | Turn loop: model decision → permission gate → tool execution → next turn/final answer |
@@ -176,6 +188,14 @@ mvn -pl ops-autoagent-app spring-boot:run `
 | GET | `/api/v1/codeops/task/{taskId}` | Task trace |
 | POST | `/api/v1/codeops/agent-loop/run` | Run model-driven tool loop; supports `dryRun` and `includeSteps` |
 
+Real LLM single-case verification reads credentials only from environment variables:
+
+```powershell
+$env:OPENAI_API_KEY = "your-api-key"
+$env:OPENAI_BASE_URL = "https://api.deepseek.com"
+.\docs\dev-ops\scripts\run-codeops-real-llm-case.ps1 -CaseId scope-expansion-cross-file-idempotency
+```
+
 Agent loop request example:
 
 ```json
@@ -215,6 +235,16 @@ Alertmanager Webhook
 ```
 
 ### 核心功能
+
+### Incident Command Center 控制台
+
+项目现在内置一个轻量 B 端展示页，用于演示实时 Incident-to-Fix 链路：
+
+```text
+http://127.0.0.1:8099/codeops-dashboard/index.html
+```
+
+页面每 2.5 秒轮询 Dashboard API，展示服务状态、告警流入、调度队列、最近 Incident-to-Fix 任务、阶段进度、失败/阻塞原因、Guardrail、补丁/测试/风险产物和人工审批状态。这样告警风暴、处理中任务和失败修复都能在页面上直接看见，而不是只藏在 JSON trace 里。
 
 ### 真实 Alertmanager 链路验证
 
@@ -297,6 +327,8 @@ Trace 中会直接暴露：
 
 **Agent Loop Harness（Phase 5）** — 类 Claude Code 的模型驱动循环。模型看到带参数 schema 的工具目录，输出 JSON tool calls；`ToolPermissionGate` 做权限前置校验；`EngineeringToolRegistry` 统一分发工具；接口默认返回轻量 trace。`dryRun` 使用本地 mock 模型验证闭环，不会把仓库内容发送到外部 LLM。
 
+**Repair Loop Harness（Phase 6）** — 类 Claude Code 的修代码闭环。定位输出会显式沉淀为 `repairPlan`；当 `localizationBlocking=true` 时主编排会阻断不安全修复；编译、测试、补丁应用和 Guard 失败会解析成 `FailureDiagnostic`，把 `mustFix`、`mustAvoid`、失败文件、失败命令和下一轮约束回灌给 BugFix。补丁既支持完整文件重写，也支持 `exactReplaceBlocks` 精确替换；oldText 不匹配会变成结构化诊断，要求下一轮先重新读取当前源码再编辑。
+
 | 组件 | 职责 |
 |------|------|
 | `AgentLoopService` | 回合循环：模型决策 → 权限 gate → 工具执行 → 下一轮/最终答案 |
@@ -363,6 +395,14 @@ mvn -pl ops-autoagent-app spring-boot:run `
 | GET | `/api/v1/codeops/evaluation/report` | 获取最新评测报告 |
 | GET | `/api/v1/codeops/task/{taskId}` | 获取任务 trace |
 | POST | `/api/v1/codeops/agent-loop/run` | 运行模型驱动工具循环；支持 `dryRun` 和 `includeSteps` |
+
+真实 LLM 单 case 验证只从环境变量读取密钥，不写入仓库：
+
+```powershell
+$env:OPENAI_API_KEY = "your-api-key"
+$env:OPENAI_BASE_URL = "https://api.deepseek.com"
+.\docs\dev-ops\scripts\run-codeops-real-llm-case.ps1 -CaseId scope-expansion-cross-file-idempotency
+```
 
 Agent loop 请求示例：
 

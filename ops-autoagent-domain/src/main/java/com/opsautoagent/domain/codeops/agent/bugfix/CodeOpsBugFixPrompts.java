@@ -84,6 +84,13 @@ public final class CodeOpsBugFixPrompts {
                   Never override current incident evidence with memory.
                   Memory hints are suggestions, not facts.
                 - Do not invent files, methods, fields, dependencies, APIs, metrics, logs, or line numbers not present in the input.
+                - repairPlan is the Plan-and-Execute contract from Code Localization Agent. Treat it as the primary execution plan:
+                  * fixStrategy decides whether a code patch is appropriate.
+                  * scopeDecision describes the expected repair boundary.
+                  * targetFiles/targetMethods are the intended first repair targets.
+                  * candidateFiles/candidateScope are legal expansion boundaries, not a license to rewrite unrelated code.
+                  * verificationPlan and riskPlan must be reflected in testSuggestions, mavenCommands, and riskNotes.
+                  * If repairPlan conflicts with visible code or reflectionDiagnostics, explain in reasoning and prefer current evidence plus diagnostics.
                 - CRITICAL — repairScope has TWO stages:
                   * initialScope is the Code Localization Agent's best first suspect. It is a recommendation, not a final lock.
                   * candidateScope is the maximum safe boundary derived from evidence and repository search. You may not go outside it.
@@ -101,10 +108,12 @@ public final class CodeOpsBugFixPrompts {
                   * NO_CODE_FIX: This is NOT a code repair incident. Do NOT generate any patch or file rewrite. Output empty unifiedDiffPatch, empty fileRewrites, empty testFileRewrites.
                 - PATCH FORMAT PRIORITY:
                   1. Prefer fileRewrites for every production Java change.
-                  2. Keep unifiedDiffPatch empty when fileRewrites is present.
-                  3. Use unifiedDiffPatch only when you cannot safely reconstruct complete file content from visible snippets.
+                  2. Use exactReplaceBlocks when the visible source contains a precise oldText block and a full file rewrite is unnecessary.
+                  3. Keep unifiedDiffPatch empty when fileRewrites or exactReplaceBlocks is present.
+                  4. Use unifiedDiffPatch only when you cannot safely reconstruct complete file content from visible snippets.
                   4. For STRICT_SINGLE_METHOD / MULTI_METHOD / FULL_FILE Java repairs, fileRewrites is the default expected output because ScopeGuard can validate complete files more reliably than handwritten unified diffs.
                 - For fileRewrites, the newContent MUST contain the COMPLETE file including all unchanged methods. Copy non-target methods VERBATIM from codeContextPack/codeSnippets.
+                - For exactReplaceBlocks, oldText MUST be copied byte-for-byte from visible codeContextPack/codeSnippets. If oldText does not match the current file, the edit will fail and the next reflection round must re-read the file.
                 - Before outputting, self-check: (1) Did I choose KEEP_SCOPE or EXPAND_SCOPE? (2) Are final targets inside candidateScope?
                   (3) Did I preserve non-target methods exactly? Redo if any answer is wrong.
                 - For INCIDENT_TO_FIX tasks with CODE_FIX strategy, put the complete rewritten production file content in fileRewrites.
@@ -199,6 +208,7 @@ public final class CodeOpsBugFixPrompts {
                   },
                   "unifiedDiffPatch": "empty string when fileRewrites is present; unified diff only as fallback",
                   "fileRewrites": [{"filePath": "string", "newContent": "complete file content", "reasoning": "string"}],
+                  "exactReplaceBlocks": [{"filePath": "string", "oldText": "exact visible source block", "newText": "replacement source block", "reasoning": "string"}],
                   "testSuggestions": ["string"],
                   "mavenCommands": ["string"],
                   "testUnifiedDiffPatch": "string",

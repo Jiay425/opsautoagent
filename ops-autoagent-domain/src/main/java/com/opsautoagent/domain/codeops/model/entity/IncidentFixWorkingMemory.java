@@ -176,10 +176,16 @@ public class IncidentFixWorkingMemory {
     private Map<String, Object> extractFixStrategy(Map<String, Object> output) {
         Map<String, Object> strategy = new LinkedHashMap<>();
         putIfPresent(strategy, "strategyType", output.get("strategyType"));
+        putIfPresent(strategy, "fixStrategy", output.get("fixStrategy"));
+        putIfPresent(strategy, "scopeDecisionType", output.get("scopeDecisionType"));
         putIfPresent(strategy, "shouldEnterCodeRepair", output.get("shouldEnterCodeRepair"));
         putIfPresent(strategy, "confidence", output.get("localizationConfidence"));
         putIfPresent(strategy, "reasoning", output.get("localizationReasoning"));
         putIfPresent(strategy, "missingEvidence", output.get("missingEvidence"));
+        putIfPresent(strategy, "localizationBlocking", output.get("localizationBlocking"));
+        putIfPresent(strategy, "localizationReflectionRequired", output.get("localizationReflectionRequired"));
+        putIfPresent(strategy, "localizationReflection", output.get("localizationReflection"));
+        putIfPresent(strategy, "repairPlan", output.get("repairPlan"));
         return strategy;
     }
 
@@ -195,6 +201,11 @@ public class IncidentFixWorkingMemory {
         putIfPresent(trace, "rootCause", output.get("rootCause"));
         putIfPresent(trace, "confidence", output.get("confidence"));
         putIfPresent(trace, "targetFiles", output.get("targetFiles"));
+        putIfPresent(trace, "targetMethods", output.get("targetMethods"));
+        putIfPresent(trace, "repairPlan", output.get("repairPlan"));
+        putIfPresent(trace, "localizationQuality", output.get("localizationQuality"));
+        putIfPresent(trace, "localizationReflection", output.get("localizationReflection"));
+        putIfPresent(trace, "localizationBlocking", output.get("localizationBlocking"));
         putIfPresent(trace, "codeHints", output.get("codeHints"));
         putIfPresent(trace, "evidenceCoverage", output.get("evidenceCoverage"));
         putIfPresent(trace, "patchSandbox", output.get("patchSandbox"));

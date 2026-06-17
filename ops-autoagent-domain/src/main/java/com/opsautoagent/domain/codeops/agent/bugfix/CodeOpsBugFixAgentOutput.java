@@ -1,6 +1,7 @@
 package com.opsautoagent.domain.codeops.agent.bugfix;
 
 import com.opsautoagent.domain.codeops.agent.patch.FileRewritePatchEntity;
+import com.opsautoagent.domain.codeops.agent.patch.ExactReplaceBlockPatchEntity;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -36,6 +37,8 @@ public class CodeOpsBugFixAgentOutput {
 
     private List<FileRewritePatchEntity> fileRewrites;
 
+    private List<ExactReplaceBlockPatchEntity> exactReplaceBlocks;
+
     private List<String> testSuggestions;
 
     private List<String> mavenCommands;
@@ -68,6 +71,7 @@ public class CodeOpsBugFixAgentOutput {
                 .scopeDecision(Map.of())
                 .unifiedDiffPatch("")
                 .fileRewrites(List.of())
+                .exactReplaceBlocks(List.of())
                 .testSuggestions(List.of())
                 .mavenCommands(List.of())
                 .testUnifiedDiffPatch("")

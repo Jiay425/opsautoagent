@@ -49,10 +49,21 @@ public class IncidentFixOrchestratorPolicy {
             return IncidentFixOrchestratorDecision.call(AgentLoopEngineeringSkill.SKILL_ID,
                     "已有运维证据，先通过模型驱动工具循环做一次只读仓库调查，为后续代码定位和修复策略提供上下文。");
         }
+        if (isLocalizationBlocking(memory) && !hasExecuted(task, RepoUnderstandingSkill.SKILL_ID)) {
+            return IncidentFixOrchestratorDecision.call(RepoUnderstandingSkill.SKILL_ID,
+                    "Agent loop 定位质量门阻断自动修复，先由仓库理解 Agent 补充根因文件、方法边界和缺失证据。");
+        }
         if (needsMapStage(memory.getCodeLocalization(), task, RepoUnderstandingSkill.SKILL_ID)
                 || needsRepoUnderstandingAfterAgentLoop(task, memory)) {
             return IncidentFixOrchestratorDecision.call(RepoUnderstandingSkill.SKILL_ID,
                     "Agent loop 调查结果仍需补强，下一步由 Incident Triage Agent 判断是否该改代码，并在需要时定位可疑文件和方法。");
+        }
+        if (isLocalizationBlocking(memory)) {
+            if (needsMapStage(memory.getReleaseRisk(), task, ReleaseRiskSkill.SKILL_ID)) {
+                return IncidentFixOrchestratorDecision.call(ReleaseRiskSkill.SKILL_ID,
+                        "代码定位质量门仍阻断自动修复，输出缺失证据、人工补证建议、运行时处置和上线观察项。");
+            }
+            return IncidentFixOrchestratorDecision.stop("代码定位质量门阻断自动修复：根因文件/方法或支撑证据不足，任务停止等待人工补证。");
         }
         if (!shouldEnterCodeRepair(task, memory)) {
             if (needsMapStage(memory.getReleaseRisk(), task, ReleaseRiskSkill.SKILL_ID)) {
@@ -104,10 +115,17 @@ public class IncidentFixOrchestratorPolicy {
             return IncidentFixOrchestratorDecision.call(AgentLoopEngineeringSkill.SKILL_ID,
                     "需求到修复任务先通过模型驱动工具循环做只读仓库调查，定位候选代码和测试文件。");
         }
+        if (isLocalizationBlocking(memory) && !hasExecuted(task, RepoUnderstandingSkill.SKILL_ID)) {
+            return IncidentFixOrchestratorDecision.call(RepoUnderstandingSkill.SKILL_ID,
+                    "Agent loop 定位质量门阻断自动修复，继续补充根因文件、方法边界和缺失证据。");
+        }
         if (needsMapStage(memory.getCodeLocalization(), task, RepoUnderstandingSkill.SKILL_ID)
                 || needsRepoUnderstandingAfterAgentLoop(task, memory)) {
             return IncidentFixOrchestratorDecision.call(RepoUnderstandingSkill.SKILL_ID,
                     "Agent loop 未形成足够稳定的候选代码位置，继续由仓库理解 Agent 补充定位。");
+        }
+        if (isLocalizationBlocking(memory)) {
+            return IncidentFixOrchestratorDecision.stop("代码定位质量门阻断自动修复：根因文件/方法或支撑证据不足，任务停止等待人工补证。");
         }
         if (!shouldEnterCodeRepair(task, memory)) {
             return IncidentFixOrchestratorDecision.stop("Agent loop / 代码定位判断当前不应进入自动代码修复，任务停止等待人工确认或补充证据。");
@@ -213,6 +231,19 @@ public class IncidentFixOrchestratorPolicy {
     }
 
     private boolean shouldEnterCodeRepair(EngineeringTaskEntity task, IncidentFixWorkingMemory memory) {
+        if (isLocalizationBlocking(memory)) {
+            return false;
+        }
+        Map<String, Object> strategy = memory.getFixStrategy();
+        if (isNeedMoreEvidenceStrategy(strategy)) {
+            return false;
+        }
+        if (strategy != null && !strategy.isEmpty()) {
+            Object value = strategy.get("shouldEnterCodeRepair");
+            if (value instanceof Boolean bool && !bool) {
+                return false;
+            }
+        }
         if (Boolean.TRUE.equals(contextValue(task, "allowPatchApply"))
                 || Boolean.TRUE.equals(contextValue(task, "allowTestPatchApply"))
                 || containsFocusArea(task, "bug_fix")
@@ -227,7 +258,6 @@ public class IncidentFixOrchestratorPolicy {
                 && isEmptyListValue(memory.getCodeLocalization().get("targetFiles"))) {
             return false;
         }
-        Map<String, Object> strategy = memory.getFixStrategy();
         if (strategy == null || strategy.isEmpty()) {
             return true;
         }
@@ -236,6 +266,56 @@ public class IncidentFixOrchestratorPolicy {
             return bool;
         }
         return "true".equalsIgnoreCase(String.valueOf(value));
+    }
+
+    private boolean isLocalizationBlocking(IncidentFixWorkingMemory memory) {
+        if (memory == null) {
+            return false;
+        }
+        if (Boolean.TRUE.equals(mapValue(memory.getCodeLocalization(), "localizationBlocking"))
+                || Boolean.TRUE.equals(mapValue(memory.getFixStrategy(), "localizationBlocking"))) {
+            return true;
+        }
+        if (isNeedMoreEvidenceStrategy(memory.getFixStrategy())) {
+            return true;
+        }
+        if (isFailedLocalization(memory.getCodeLocalization())) {
+            return true;
+        }
+        Object reflection = mapValue(memory.getCodeLocalization(), "localizationReflection");
+        if (reflection instanceof Map<?, ?> map && Boolean.TRUE.equals(map.get("blocking"))) {
+            return true;
+        }
+        Object strategyReflection = mapValue(memory.getFixStrategy(), "localizationReflection");
+        return strategyReflection instanceof Map<?, ?> map && Boolean.TRUE.equals(map.get("blocking"));
+    }
+
+    private boolean isNeedMoreEvidenceStrategy(Map<String, Object> strategy) {
+        if (strategy == null || strategy.isEmpty()) {
+            return false;
+        }
+        Object value = strategy.get("strategyType");
+        if (value == null) {
+            value = strategy.get("fixStrategy");
+        }
+        return "NEED_MORE_EVIDENCE".equalsIgnoreCase(String.valueOf(value));
+    }
+
+    private boolean isFailedLocalization(Map<String, Object> codeLocalization) {
+        if (codeLocalization == null || codeLocalization.isEmpty()) {
+            return false;
+        }
+        Object success = codeLocalization.get("localizationSuccess");
+        Object fallback = codeLocalization.get("localizationFallback");
+        Object missing = codeLocalization.get("missingEvidence");
+        if (Boolean.FALSE.equals(success) && !isEmptyListValue(missing)) {
+            return true;
+        }
+        return Boolean.TRUE.equals(fallback) && !isEmptyListValue(missing);
+    }
+
+    private Object mapValue(Map<String, Object> map, String key) {
+        return map == null ? null : map.get(key);
     }
 
     private boolean hasLowLocalizationConfidence(IncidentFixWorkingMemory memory) {
