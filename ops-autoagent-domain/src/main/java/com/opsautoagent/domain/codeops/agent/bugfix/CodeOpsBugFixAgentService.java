@@ -72,6 +72,7 @@ public class CodeOpsBugFixAgentService {
                     "reason", modelDecision.getReason(),
                     "reflectionRound", reflectionRound
             ));
+            parsed.setLlmUsage(compatibleChatClient.lastUsage());
             parsed.setCostMillis(System.currentTimeMillis() - start);
             parsed.setRawContent(content == null ? "" : content);
             parsed.setCreateTime(LocalDateTime.now());
@@ -109,6 +110,7 @@ public class CodeOpsBugFixAgentService {
                             "reason", modelDecision.getReason(),
                             "reflectionRound", reflectionRound
                     ))
+                    .llmUsage(compatibleChatClient.lastUsage())
                     .costMillis(System.currentTimeMillis() - start)
                     .createTime(LocalDateTime.now())
                     .build();

@@ -85,6 +85,7 @@ public class AgentLoopEngineeringSkill implements EngineeringSkill {
                 .metadata(metadata)
                 .build(), resolveModelClient(task));
         Map<String, Object> rawOutput = buildRawOutput(result);
+        rawOutput.put("llmUsage", modelClient.lastUsage());
         rawOutput.put("preLoopCodeContextPack", preLoopCodeContextPack);
         Map<String, Object> localizationQuality = localizationQuality(rawOutput, result);
         Map<String, Object> localizationReflection = localizationReflection(rawOutput, localizationQuality, preLoopCodeContextPack);

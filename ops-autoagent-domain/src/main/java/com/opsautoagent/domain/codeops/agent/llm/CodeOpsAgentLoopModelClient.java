@@ -60,6 +60,10 @@ public class CodeOpsAgentLoopModelClient implements AgentLoopModelClient {
         }
     }
 
+    public Map<String, Object> lastUsage() {
+        return chatClient.lastUsage();
+    }
+
     private String buildPrompt(AgentLoopRequest request, List<AgentLoopStep> previousSteps) {
         JSONObject payload = new JSONObject(true);
         payload.put("goal", request == null ? "" : request.getGoal());

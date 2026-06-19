@@ -378,6 +378,7 @@ public class BugFixSkill implements EngineeringSkill {
         output.put("reflectionDiagnosis", llmFix == null || llmFix.getReflectionDiagnosis() == null ? Map.of() : llmFix.getReflectionDiagnosis());
         output.put("scopeDecision", llmFix == null || llmFix.getScopeDecision() == null ? Map.of() : llmFix.getScopeDecision());
         output.put("modelRouting", llmFix == null || llmFix.getModelRouting() == null ? Map.of() : llmFix.getModelRouting());
+        output.put("llmUsage", llmFix == null || llmFix.getLlmUsage() == null ? Map.of() : llmFix.getLlmUsage());
         output.put("repairPlan", extractRepairPlan(task, Map.of()));
         // Permission policy
         AgentPermissionPolicy.PolicyDecision policy = permissionPolicy.evaluate(

@@ -1,7 +1,9 @@
 package com.opsautoagent.trigger.http;
 
+import com.alibaba.fastjson.JSON;
 import com.opsautoagent.api.dto.CodeOpsIncidentFixViewDTO;
 import com.opsautoagent.api.response.Response;
+import com.opsautoagent.domain.codeops.agent.llm.LlmCostControlService;
 import com.opsautoagent.domain.codeops.agent.scheduler.IncidentScheduler;
 import com.opsautoagent.domain.codeops.agent.security.CodeOpsSecurityGovernanceService;
 import com.opsautoagent.domain.codeops.agent.security.HumanApprovalGate;
@@ -41,6 +43,9 @@ public class CodeOpsDashboardController {
     @Resource
     private CodeOpsSecurityGovernanceService codeOpsSecurityGovernanceService;
 
+    @Resource
+    private LlmCostControlService llmCostControlService;
+
     @RequestMapping(value = "overview", method = RequestMethod.GET)
     public Response<Map<String, Object>> overview() {
         List<EngineeringTaskEntity> tasks = engineeringTaskAgentService.listRecent(20);
@@ -52,6 +57,7 @@ public class CodeOpsDashboardController {
         data.put("taskSummary", taskSummary(tasks));
         data.put("scheduler", scheduler);
         data.put("security", codeOpsSecurityGovernanceService.globalSummary());
+        data.put("llmCost", llmCostControlService.globalSummary());
         return ok(data);
     }
 
@@ -102,6 +108,7 @@ public class CodeOpsDashboardController {
         data.put("incidentView", incidentView);
         data.put("trace", engineeringTaskTraceService.buildTrace(task));
         data.put("security", codeOpsSecurityGovernanceService.taskSummary(task, approvalMap));
+        data.put("llmCost", taskCostSummary(task));
         data.put("failure", failureSummary(task, incidentView));
         return ok(data);
     }
@@ -194,6 +201,7 @@ public class CodeOpsDashboardController {
         row.put("stage", currentStage(task));
         row.put("progressPercent", progressPercent(task));
         row.put("usedToolCalls", task.getUsedToolCalls() == null ? 0 : task.getUsedToolCalls());
+        row.put("estimatedLlmCostCny", taskCostSummary(task).get("estimatedTotalCostCny"));
         row.put("stepCount", task.getSteps() == null ? 0 : task.getSteps().size());
         row.put("lastStepSummary", lastStepSummary(task));
         row.put("failureReason", failureSummary(task).get("reason"));
@@ -201,6 +209,53 @@ public class CodeOpsDashboardController {
         row.put("createTime", task.getCreateTime() == null ? "" : task.getCreateTime().toString());
         row.put("updateTime", task.getUpdateTime() == null ? "" : task.getUpdateTime().toString());
         return row;
+    }
+
+    private Map<String, Object> taskCostSummary(EngineeringTaskEntity task) {
+        int calls = 0;
+        long tokens = 0;
+        double cost = 0.0;
+        List<Map<String, Object>> stepCosts = new ArrayList<>();
+        if (task != null && task.getSteps() != null) {
+            for (EngineeringTaskStepEntity step : task.getSteps()) {
+                Map<String, Object> raw = parseRaw(step.getRawEvidenceJson());
+                Object usageObj = raw.get("llmUsage");
+                if (!(usageObj instanceof Map<?, ?> usage)) {
+                    continue;
+                }
+                calls++;
+                tokens += numberValue(usage.get("estimatedTotalTokens"));
+                cost += decimalValue(usage.get("estimatedTotalCostCny"));
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("stepNo", step.getStepNo());
+                item.put("skill", step.getSelectedSkill());
+                item.put("model", value(usage.get("model"), ""));
+                item.put("modelTier", value(usage.get("modelTier"), ""));
+                item.put("estimatedTotalTokens", numberValue(usage.get("estimatedTotalTokens")));
+                item.put("estimatedTotalCostCny", decimalValue(usage.get("estimatedTotalCostCny")));
+                item.put("overSoftLimit", Boolean.TRUE.equals(usage.get("overSoftLimit")));
+                stepCosts.add(item);
+            }
+        }
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("llmCalls", calls);
+        summary.put("estimatedTotalTokens", tokens);
+        summary.put("estimatedTotalCostCny", Math.round(cost * 10000.0) / 10000.0);
+        summary.put("stepCosts", stepCosts);
+        summary.put("note", "Estimated by prompt/response character count. Real provider billing may differ.");
+        return summary;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> parseRaw(String rawEvidenceJson) {
+        if (isBlank(rawEvidenceJson)) {
+            return Map.of();
+        }
+        try {
+            return JSON.parseObject(rawEvidenceJson, Map.class);
+        } catch (Exception ignored) {
+            return Map.of();
+        }
     }
 
     private Map<String, Object> alertItem(String status, Map<String, Object> source, EngineeringTaskEntity task) {
@@ -398,6 +453,17 @@ public class CodeOpsDashboardController {
             return value == null ? 0 : Integer.parseInt(String.valueOf(value));
         } catch (NumberFormatException e) {
             return 0;
+        }
+    }
+
+    private double decimalValue(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        try {
+            return value == null ? 0.0 : Double.parseDouble(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            return 0.0;
         }
     }
 

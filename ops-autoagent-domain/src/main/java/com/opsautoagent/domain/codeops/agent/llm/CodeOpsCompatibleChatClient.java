@@ -3,6 +3,7 @@ package com.opsautoagent.domain.codeops.agent.llm;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import lombok.extern.slf4j.Slf4j;
+import jakarta.annotation.Resource;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
@@ -11,12 +12,16 @@ import org.springframework.web.client.RestClientException;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Service
 public class CodeOpsCompatibleChatClient {
 
     private final RestClient restClient = RestClient.builder().build();
+
+    @Resource
+    private LlmCostControlService llmCostControlService;
 
     @Value("${codeops.agent.llm.compatible-client.enabled:true}")
     private boolean enabled;
@@ -38,6 +43,8 @@ public class CodeOpsCompatibleChatClient {
 
     @Value("${codeops.agent.llm.compatible-client.max-tokens:8192}")
     private int maxTokens;
+
+    private volatile Map<String, Object> lastUsage = Map.of();
 
     public boolean available() {
         return enabled && !isBlank(baseUrl) && !isBlank(apiKey) && !isBlank(model);
@@ -63,7 +70,8 @@ public class CodeOpsCompatibleChatClient {
         if (!available()) throw new IllegalStateException(unavailableReason());
 
         JSONObject request = new JSONObject();
-        request.put("model", modelOverride != null && !modelOverride.isBlank() ? modelOverride : model);
+        String selectedModel = modelOverride != null && !modelOverride.isBlank() ? modelOverride : model;
+        request.put("model", selectedModel);
         request.put("messages", List.of(message("user", prompt)));
         request.put("temperature", temperature);
         request.put("max_tokens", maxTokensOverride != null && maxTokensOverride > 0 ? maxTokensOverride : maxTokens);
@@ -87,7 +95,12 @@ public class CodeOpsCompatibleChatClient {
         if (isBlank(content)) {
             throw new IllegalStateException("Compatible LLM returned blank content. response=" + abbreviate(responseText, 1200));
         }
+        lastUsage = llmCostControlService.estimate("compatible_chat", selectedModel, prompt, content);
         return content;
+    }
+
+    public Map<String, Object> lastUsage() {
+        return lastUsage == null ? Map.of() : lastUsage;
     }
 
     private JSONObject message(String role, String content) {

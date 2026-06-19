@@ -59,6 +59,8 @@ public class CodeOpsBugFixAgentOutput {
 
     private Map<String, Object> modelRouting;
 
+    private Map<String, Object> llmUsage;
+
     public static CodeOpsBugFixAgentOutput unavailable(String reason) {
         return CodeOpsBugFixAgentOutput.builder()
                 .success(false)
@@ -81,6 +83,7 @@ public class CodeOpsBugFixAgentOutput {
                 .errorMessage(reason)
                 .costMillis(0L)
                 .createTime(LocalDateTime.now())
+                .llmUsage(Map.of())
                 .build();
     }
 

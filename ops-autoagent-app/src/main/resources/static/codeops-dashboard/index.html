@@ -207,6 +207,8 @@
           <div class="metric"><div class="label">失败待处理</div><div class="value" id="failedCount">0</div></div>
           <div class="metric"><div class="label">队列长度</div><div class="value" id="queueSize">0</div></div>
           <div class="metric"><div class="label">可用并发槽</div><div class="value" id="availableSlots">0</div></div>
+          <div class="metric"><div class="label">LLM 调用</div><div class="value" id="llmCalls">0</div></div>
+          <div class="metric"><div class="label">估算费用</div><div class="value" id="llmCost">¥0</div></div>
         </div>
       </div>
       <div class="panel">
@@ -291,6 +293,9 @@
       $('failedCount').textContent = task.failed || 0;
       $('queueSize').textContent = queueStats.queueSize || 0;
       $('availableSlots').textContent = scheduler.availableSlots ?? 0;
+      const llmCost = data.llmCost || {};
+      $('llmCalls').textContent = llmCost.totalLlmCalls || 0;
+      $('llmCost').textContent = `¥${llmCost.totalEstimatedCostCny || 0}`;
       renderServices(data.services || []);
       renderQueue(scheduler.queuedIncidents || []);
     }
@@ -339,7 +344,7 @@
             <div class="name">${esc(item.serviceName)} · ${esc(item.alertName)}</div>
             <span class="status ${cls(item.status)}">${esc(item.status)}</span>
           </div>
-          <div class="meta">${esc(item.stage)} · ${esc(item.endpoint || '-')} · tools=${esc(item.usedToolCalls)}</div>
+          <div class="meta">${esc(item.stage)} · ${esc(item.endpoint || '-')} · tools=${esc(item.usedToolCalls)} · cost=¥${esc(item.estimatedLlmCostCny || 0)}</div>
           <div class="progress"><div class="bar" style="width:${Math.max(0, Math.min(100, item.progressPercent || 0))}%"></div></div>
           <div class="meta">${esc(item.lastStepSummary)}</div>
         </div>
@@ -358,6 +363,7 @@
       const view = detail.incidentView || {};
       const task = detail.task || {};
       const failure = detail.failure || {};
+      const llmCost = detail.llmCost || {};
       const stages = view.stages || [];
       const artifacts = view.artifacts || {};
       $('taskDetail').className = '';
@@ -387,6 +393,9 @@
             <pre>${esc(JSON.stringify(view.guardrails || detail.security || {}, null, 2))}</pre>
           </div>
         </div>
+        <div style="height:12px"></div>
+        <h3>LLM 成本</h3>
+        <pre>${esc(JSON.stringify(llmCost, null, 2))}</pre>
         <div style="height:12px"></div>
         <h3>关键产物</h3>
         <pre>${esc(JSON.stringify(artifacts, null, 2))}</pre>
