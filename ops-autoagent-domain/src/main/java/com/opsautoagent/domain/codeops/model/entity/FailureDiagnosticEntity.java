@@ -41,6 +41,16 @@ public class FailureDiagnosticEntity {
 
     private String patchHash;
 
+    private List<Map<String, Object>> compileErrors;
+
+    private List<Map<String, Object>> testAssertions;
+
+    private List<Map<String, Object>> stackTraceFrames;
+
+    private Boolean verificationBlocked;
+
+    private String verificationBlockedReason;
+
     public Map<String, Object> toRawOutput() {
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("round", round == null ? 0 : round);
@@ -55,6 +65,11 @@ public class FailureDiagnosticEntity {
         output.put("repairScope", repairScope == null ? Map.of() : repairScope);
         output.put("modelRouting", modelRouting == null ? Map.of() : modelRouting);
         output.put("rawFailureSummary", rawFailureSummary == null ? "" : rawFailureSummary);
+        output.put("compileErrors", compileErrors == null ? List.of() : compileErrors);
+        output.put("testAssertions", testAssertions == null ? List.of() : testAssertions);
+        output.put("stackTraceFrames", stackTraceFrames == null ? List.of() : stackTraceFrames);
+        output.put("verificationBlocked", Boolean.TRUE.equals(verificationBlocked));
+        output.put("verificationBlockedReason", verificationBlockedReason == null ? "" : verificationBlockedReason);
         if (patchHash != null && !patchHash.isBlank()) {
             output.put("patchHash", patchHash);
         }

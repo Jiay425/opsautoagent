@@ -5,8 +5,15 @@ import com.opsautoagent.domain.codeops.model.entity.EngineeringToolDefinitionEnt
 import com.opsautoagent.domain.codeops.model.entity.RepoDiffContextEntity;
 import com.opsautoagent.domain.codeops.agent.task.BackgroundToolTaskService;
 import com.opsautoagent.domain.codeops.model.entity.BackgroundToolTaskEntity;
+import com.opsautoagent.domain.codeops.agent.repair.RepairObservationService;
+import com.opsautoagent.domain.codeops.agent.hook.CodeOpsHookEvent;
+import com.opsautoagent.domain.codeops.agent.hook.CodeOpsHookService;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -19,15 +26,21 @@ public class EngineeringToolRegistry {
     private final EngineeringToolGateway gateway;
     private final BackgroundToolTaskService backgroundToolTaskService;
     private final ToolPermissionGate permissionGate;
+    private final RepairObservationService repairObservationService;
+    private final CodeOpsHookService hookService;
     private final Map<String, EngineeringToolDefinitionEntity> definitions = new LinkedHashMap<>();
     private final Map<String, EngineeringToolHandler> handlers = new LinkedHashMap<>();
 
     public EngineeringToolRegistry(EngineeringToolGateway gateway,
                                    BackgroundToolTaskService backgroundToolTaskService,
-                                   ToolPermissionGate permissionGate) {
+                                   ToolPermissionGate permissionGate,
+                                   RepairObservationService repairObservationService,
+                                   CodeOpsHookService hookService) {
         this.gateway = gateway;
         this.backgroundToolTaskService = backgroundToolTaskService;
         this.permissionGate = permissionGate;
+        this.repairObservationService = repairObservationService;
+        this.hookService = hookService;
         gateway.listTools().forEach(tool -> {
             tool.setArgumentSchema(argumentSchema(tool.getToolName()));
             definitions.put(tool.getToolName(), tool);
@@ -56,21 +69,37 @@ public class EngineeringToolRegistry {
         if (request == null || request.getToolName() == null || request.getToolName().isBlank()) {
             return EngineeringToolResult.denied("", "Tool name is blank");
         }
+        emitToolHook(request, CodeOpsHookEvent.BEFORE_TOOL_USE, "before tool permission");
         ToolPermissionDecision decision = permissionGate.decide(request, find(request.getToolName()));
         if (decision.isRequiresApproval()) {
-            return EngineeringToolResult.requiresApproval(request.getToolName(), decision.getReason(), decision.getPolicy());
+            EngineeringToolResult result = EngineeringToolResult.requiresApproval(request.getToolName(), decision.getReason(), decision.getPolicy());
+            recordObservation(request, decision, result);
+            emitToolHook(request, CodeOpsHookEvent.AFTER_TOOL_USE, result.getSummary());
+            return result;
         }
         if (!decision.isAllowed()) {
-            return EngineeringToolResult.denied(request.getToolName(), decision.getReason());
+            EngineeringToolResult result = deniedByPermission(request, decision);
+            recordObservation(request, decision, result);
+            emitToolHook(request, CodeOpsHookEvent.AFTER_TOOL_USE, result.getSummary());
+            return result;
         }
         EngineeringToolHandler handler = handlers.get(request.getToolName());
         if (handler == null) {
-            return EngineeringToolResult.denied(request.getToolName(), "Tool is registered but has no handler");
+            EngineeringToolResult result = EngineeringToolResult.denied(request.getToolName(), "Tool is registered but has no handler");
+            recordObservation(request, decision, result);
+            emitToolHook(request, CodeOpsHookEvent.AFTER_TOOL_USE, result.getSummary());
+            return result;
         }
         try {
-            return handler.execute(request);
+            EngineeringToolResult result = handler.execute(request);
+            recordObservation(request, decision, result);
+            emitToolHook(request, CodeOpsHookEvent.AFTER_TOOL_USE, result.getSummary());
+            return result;
         } catch (Exception e) {
-            return EngineeringToolResult.failed(request.getToolName(), e);
+            EngineeringToolResult result = EngineeringToolResult.failed(request.getToolName(), e);
+            recordObservation(request, decision, result);
+            emitToolHook(request, CodeOpsHookEvent.AFTER_TOOL_USE, result.getSummary());
+            return result;
         }
     }
 
@@ -81,7 +110,47 @@ public class EngineeringToolRegistry {
         handlers.put("repo.git_diff", this::gitDiff);
         handlers.put("repo.maven", this::maven);
         handlers.put("repo.maven_background", this::mavenBackground);
+        handlers.put("repo.exact_replace", this::exactReplace);
         handlers.put("task.background_status", this::backgroundStatus);
+    }
+
+    private void recordObservation(EngineeringToolRequest request,
+                                   ToolPermissionDecision decision,
+                                   EngineeringToolResult result) {
+        if (request == null || request.getTask() == null || repairObservationService == null) {
+            return;
+        }
+        repairObservationService.recordToolObservation(request.getTask(), "AGENT_TOOL", request, decision, result);
+    }
+
+    private EngineeringToolResult deniedByPermission(EngineeringToolRequest request, ToolPermissionDecision decision) {
+        if (request != null && "repo.exact_replace".equals(request.getToolName())) {
+            Map<String, Object> output = new LinkedHashMap<>();
+            output.put("failureReason", "WRITE_DENIED");
+            output.put("filePath", request.stringArgument("filePath"));
+            output.put("policy", decision == null || decision.getPolicy() == null ? Map.of() : decision.getPolicy());
+            return EngineeringToolResult.builder()
+                    .toolName(request.getToolName())
+                    .success(false)
+                    .status("DENIED")
+                    .summary(decision == null ? "write denied" : decision.getReason())
+                    .output(output)
+                    .errorType("WRITE_DENIED")
+                    .errorMessage(decision == null ? "write denied" : decision.getReason())
+                    .build();
+        }
+        return EngineeringToolResult.denied(request == null ? "" : request.getToolName(),
+                decision == null ? "" : decision.getReason());
+    }
+
+    private void emitToolHook(EngineeringToolRequest request, CodeOpsHookEvent event, String summary) {
+        if (request == null || request.getTask() == null || hookService == null) {
+            return;
+        }
+        hookService.emit(request.getTask(), event, "AGENT_TOOL", summary, Map.of(
+                "toolName", request.getToolName() == null ? "" : request.getToolName(),
+                "arguments", request.getArguments() == null ? Map.of() : request.getArguments()
+        ));
     }
 
     private EngineeringToolResult createSnapshot(EngineeringToolRequest request) {
@@ -166,6 +235,96 @@ public class EngineeringToolRegistry {
         return EngineeringToolResult.success(request.getToolName(),
                 "backgroundTaskId=" + backgroundTaskId + ", status=" + backgroundTask.getStatus(),
                 backgroundTask);
+    }
+
+    private EngineeringToolResult exactReplace(EngineeringToolRequest request) {
+        String repository = repository(request);
+        String filePath = request.stringArgument("filePath");
+        String oldText = normalizeLineEndings(request.stringArgument("oldText"));
+        String newText = normalizeLineEndings(request.stringArgument("newText"));
+        Map<String, Object> output = new LinkedHashMap<>();
+        output.put("repository", repository);
+        output.put("filePath", filePath);
+        output.put("oldTextLength", oldText.length());
+        output.put("newTextLength", newText.length());
+        if (repository.isBlank() || filePath.isBlank() || oldText.isBlank()) {
+            output.put("failureReason", "INVALID_ARGUMENT");
+            return EngineeringToolResult.builder()
+                    .toolName(request.getToolName())
+                    .success(false)
+                    .status("FAILED")
+                    .summary("repo.exact_replace invalid arguments")
+                    .output(output)
+                    .errorType("INVALID_ARGUMENT")
+                    .errorMessage("repository, filePath and oldText are required")
+                    .build();
+        }
+        Path repoRoot = Path.of(repository).toAbsolutePath().normalize();
+        Path file = repoRoot.resolve(filePath).normalize();
+        if (!file.startsWith(repoRoot) || !Files.exists(file) || !Files.isRegularFile(file)) {
+            output.put("failureReason", "FILE_NOT_FOUND");
+            return EngineeringToolResult.builder()
+                    .toolName(request.getToolName())
+                    .success(false)
+                    .status("FAILED")
+                    .summary("repo.exact_replace file not found")
+                    .output(output)
+                    .errorType("FILE_NOT_FOUND")
+                    .errorMessage(filePath + " not found or outside repository")
+                    .build();
+        }
+        try {
+            String current = normalizeLineEndings(Files.readString(file, StandardCharsets.UTF_8));
+            int first = current.indexOf(oldText);
+            if (first < 0) {
+                output.put("failureReason", "OLD_TEXT_NOT_FOUND");
+                output.put("contextStale", true);
+                output.put("currentSnippet", contextForMismatch(current, oldText));
+                return EngineeringToolResult.builder()
+                        .toolName(request.getToolName())
+                        .success(false)
+                        .status("FAILED")
+                        .summary("repo.exact_replace oldText not found")
+                        .output(output)
+                        .errorType("CONTEXT_STALE")
+                        .errorMessage("oldText not found; re-read the current file before retry")
+                        .build();
+            }
+            int second = current.indexOf(oldText, first + oldText.length());
+            if (second >= 0) {
+                output.put("failureReason", "MULTIPLE_MATCHES");
+                output.put("firstMatchContext", contextAt(current, first));
+                return EngineeringToolResult.builder()
+                        .toolName(request.getToolName())
+                        .success(false)
+                        .status("FAILED")
+                        .summary("repo.exact_replace multiple oldText matches")
+                        .output(output)
+                        .errorType("MULTIPLE_MATCHES")
+                        .errorMessage("oldText matched multiple locations; include a larger unique block")
+                        .build();
+            }
+            String updated = current.substring(0, first) + newText + current.substring(first + oldText.length());
+            Files.writeString(file, updated, StandardCharsets.UTF_8);
+            output.put("failureReason", "");
+            output.put("matchOffset", first);
+            output.put("updated", true);
+            output.put("updatedSnippet", contextAt(updated, first));
+            return EngineeringToolResult.success(request.getToolName(),
+                    "repo.exact_replace applied filePath=" + filePath,
+                    output);
+        } catch (IOException e) {
+            output.put("failureReason", "IO_ERROR");
+            return EngineeringToolResult.builder()
+                    .toolName(request.getToolName())
+                    .success(false)
+                    .status("FAILED")
+                    .summary("repo.exact_replace IO error")
+                    .output(output)
+                    .errorType("IO_ERROR")
+                    .errorMessage(e.getMessage())
+                    .build();
+        }
     }
 
     private String repository(EngineeringToolRequest request) {
@@ -253,6 +412,12 @@ public class EngineeringToolRegistry {
                     "timeoutMillis", "integer, optional, default 120000",
                     "nodeId", "string, optional, DAG node id for notification correlation"
             ));
+            case "repo.exact_replace" -> schema(Map.of(
+                    "repository", "string, required, absolute or workspace-relative repository path",
+                    "filePath", "string, required, repository-relative file path",
+                    "oldText", "string, required, exact current source block",
+                    "newText", "string, required, replacement source block"
+            ));
             case "task.background_status" -> schema(Map.of(
                     "backgroundTaskId", "string, required, id returned by repo.maven_background"
             ));
@@ -265,6 +430,36 @@ public class EngineeringToolRegistry {
         schema.put("type", "object");
         schema.put("arguments", new LinkedHashMap<>(arguments));
         return schema;
+    }
+
+    private String normalizeLineEndings(String value) {
+        return value == null ? "" : value.replace("\r\n", "\n").replace('\r', '\n');
+    }
+
+    private String contextForMismatch(String current, String oldText) {
+        String firstLine = oldText == null ? "" : oldText.lines().findFirst().orElse("").trim();
+        if (current == null || current.isBlank() || firstLine.isBlank()) {
+            return abbreviate(current, 600);
+        }
+        int index = current.indexOf(firstLine);
+        return index < 0 ? abbreviate(current, 600) : contextAt(current, index);
+    }
+
+    private String contextAt(String text, int index) {
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+        int safeIndex = Math.max(0, Math.min(index, text.length()));
+        int start = Math.max(0, safeIndex - 300);
+        int end = Math.min(text.length(), safeIndex + 300);
+        return text.substring(start, end);
+    }
+
+    private String abbreviate(String value, int maxLength) {
+        if (value == null) {
+            return "";
+        }
+        return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
     }
 
 }

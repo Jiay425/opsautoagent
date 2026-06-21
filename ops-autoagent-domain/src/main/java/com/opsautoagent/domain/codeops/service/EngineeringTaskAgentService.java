@@ -13,7 +13,10 @@ import com.opsautoagent.domain.codeops.model.entity.EngineeringTaskStepEntity;
 import com.opsautoagent.domain.codeops.model.entity.IncidentFixWorkingMemory;
 import com.opsautoagent.domain.codeops.model.entity.TaskNotificationEntity;
 import com.opsautoagent.domain.codeops.agent.compaction.ContextCompactionService;
+import com.opsautoagent.domain.codeops.agent.hook.CodeOpsHookEvent;
+import com.opsautoagent.domain.codeops.agent.hook.CodeOpsHookService;
 import com.opsautoagent.domain.codeops.agent.memory.IncidentMemoryService;
+import com.opsautoagent.domain.codeops.agent.repair.RepairObservationService;
 import com.opsautoagent.domain.codeops.agent.recovery.ErrorRecoveryPolicy;
 import com.opsautoagent.domain.codeops.agent.recovery.FailureDiagnosticParserService;
 import com.opsautoagent.domain.codeops.agent.recovery.RecoveryDecision;
@@ -59,6 +62,8 @@ public class EngineeringTaskAgentService {
     private final AgentRuntimeService agentRuntimeService;
     private final CodeOpsTaskDagService taskDagService;
     private final BackgroundToolTaskService backgroundToolTaskService;
+    private final CodeOpsHookService hookService;
+    private final RepairObservationService repairObservationService;
 
     private final ConcurrentMap<String, EngineeringTaskEntity> taskStore = new ConcurrentHashMap<>();
 
@@ -72,7 +77,9 @@ public class EngineeringTaskAgentService {
                                        HumanApprovalGate humanApprovalGate,
                                        AgentRuntimeService agentRuntimeService,
                                        CodeOpsTaskDagService taskDagService,
-                                       BackgroundToolTaskService backgroundToolTaskService) {
+                                       BackgroundToolTaskService backgroundToolTaskService,
+                                       CodeOpsHookService hookService,
+                                       RepairObservationService repairObservationService) {
         this.skillRegistry = skillRegistry;
         this.orchestratorPolicy = orchestratorPolicy;
         this.toolGateway = toolGateway;
@@ -84,6 +91,8 @@ public class EngineeringTaskAgentService {
         this.agentRuntimeService = agentRuntimeService;
         this.taskDagService = taskDagService;
         this.backgroundToolTaskService = backgroundToolTaskService;
+        this.hookService = hookService;
+        this.repairObservationService = repairObservationService;
     }
 
     public EngineeringTaskEntity submit(EngineeringTaskEntity request) {
@@ -583,6 +592,14 @@ public class EngineeringTaskAgentService {
         result.setRawOutput(rawWithDiagnostic);
         skillOutputs.put(skillId, rawWithDiagnostic);
         failure.put("diagnostic", diagnostic);
+        hookService.emit(task, CodeOpsHookEvent.ON_FAILURE_DIAGNOSTIC, "REFLECTION",
+                "failure diagnostic parsed: " + diagnostic.getOrDefault("failureType", "UNKNOWN"),
+                Map.of(
+                        "failedSkill", skillId,
+                        "round", reflectionRound + 1,
+                        "diagnostic", diagnostic
+                ));
+        repairObservationService.updateLatestPatchAttempt(task, Map.of(), diagnostic, false);
 
         List<Object> failures = new ArrayList<>();
         Object existingFailures = context.get("incidentFixReflectionFailures");

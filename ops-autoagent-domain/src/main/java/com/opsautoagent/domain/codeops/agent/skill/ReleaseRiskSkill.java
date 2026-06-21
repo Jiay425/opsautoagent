@@ -1,6 +1,9 @@
 package com.opsautoagent.domain.codeops.agent.skill;
 
 import com.opsautoagent.domain.codeops.agent.knowledge.EngineeringKnowledgeSearchService;
+import com.opsautoagent.domain.codeops.agent.hook.CodeOpsHookEvent;
+import com.opsautoagent.domain.codeops.agent.hook.CodeOpsHookService;
+import com.opsautoagent.domain.codeops.agent.repair.RepairObservationService;
 import com.opsautoagent.domain.codeops.agent.release.CodeOpsReleaseRiskAgentInput;
 import com.opsautoagent.domain.codeops.agent.release.CodeOpsReleaseRiskAgentOutput;
 import com.opsautoagent.domain.codeops.agent.release.CodeOpsReleaseRiskAgentService;
@@ -34,13 +37,16 @@ public class ReleaseRiskSkill implements EngineeringSkill {
     private final EngineeringKnowledgeSearchService knowledgeSearchService;
 
     private final CodeOpsReleaseRiskAgentService releaseRiskAgentService;
+    private final CodeOpsHookService hookService;
 
     public ReleaseRiskSkill(EngineeringToolGateway toolGateway,
                             EngineeringKnowledgeSearchService knowledgeSearchService,
-                            CodeOpsReleaseRiskAgentService releaseRiskAgentService) {
+                            CodeOpsReleaseRiskAgentService releaseRiskAgentService,
+                            CodeOpsHookService hookService) {
         this.toolGateway = toolGateway;
         this.knowledgeSearchService = knowledgeSearchService;
         this.releaseRiskAgentService = releaseRiskAgentService;
+        this.hookService = hookService;
     }
 
     @Override
@@ -61,6 +67,11 @@ public class ReleaseRiskSkill implements EngineeringSkill {
         Map<String, Object> patchGeneration = skillOutput(task, BugFixSkill.SKILL_ID);
         Map<String, Object> testVerification = skillOutput(task, TestVerificationSkill.SKILL_ID);
         Map<String, Object> patchFacts = buildPatchFacts(patchGeneration, testVerification, diffContext);
+        hookService.emit(task, CodeOpsHookEvent.BEFORE_RELEASE_RISK, "RELEASE_RISK",
+                "before release risk analysis", Map.of(
+                        "patchFacts", patchFacts,
+                        "manualTakeoverRequired", manualTakeoverRequired(patchGeneration, testVerification)
+                ));
         List<EngineeringKnowledgeMatchEntity> knowledgeMatches = knowledgeSearchService.search(
                 task,
                 safeList(diffContext.getChangedFiles()),
@@ -114,6 +125,12 @@ public class ReleaseRiskSkill implements EngineeringSkill {
         rawOutput.put("autoPatchBlockedReason", autoPatchBlockedReason(patchGeneration));
         rawOutput.put("verificationBlockedReason", verificationBlockedReason(testVerification));
         rawOutput.put("blockedAutomationSummary", blockedAutomationSummary(patchGeneration, testVerification));
+        rawOutput.put("repairObservations", task.getContext() == null
+                ? List.of()
+                : task.getContext().getOrDefault(RepairObservationService.REPAIR_OBSERVATIONS_KEY, List.of()));
+        rawOutput.put("patchAttempts", task.getContext() == null
+                ? List.of()
+                : task.getContext().getOrDefault(RepairObservationService.PATCH_ATTEMPTS_KEY, List.of()));
         rawOutput.put("modelRouting", agentOutput.getModelRouting() == null ? Map.of() : agentOutput.getModelRouting());
         rawOutput.put("llmReleaseRiskError", value(agentOutput.getErrorMessage()));
         return EngineeringSkillResultEntity.builder()

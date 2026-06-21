@@ -5,6 +5,9 @@ import com.opsautoagent.domain.codeops.agent.patch.PatchApplyService;
 import com.opsautoagent.domain.codeops.agent.patch.FileRewritePatchEntity;
 import com.opsautoagent.domain.codeops.agent.patch.PatchValidationResult;
 import com.opsautoagent.domain.codeops.agent.patch.PatchValidationService;
+import com.opsautoagent.domain.codeops.agent.hook.CodeOpsHookEvent;
+import com.opsautoagent.domain.codeops.agent.hook.CodeOpsHookService;
+import com.opsautoagent.domain.codeops.agent.repair.RepairObservationService;
 import com.opsautoagent.domain.codeops.agent.test.CodeOpsTestVerificationAgentInput;
 import com.opsautoagent.domain.codeops.agent.test.CodeOpsTestVerificationAgentOutput;
 import com.opsautoagent.domain.codeops.agent.test.CodeOpsTestVerificationAgentService;
@@ -18,6 +21,7 @@ import com.opsautoagent.domain.codeops.model.entity.CodeSnippetEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringSkillEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringSkillResultEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringTaskEntity;
+import com.opsautoagent.domain.codeops.model.entity.RepairObservationEntity;
 import com.opsautoagent.domain.codeops.model.entity.RepoDiffContextEntity;
 import com.opsautoagent.domain.codeops.model.entity.TestVerificationPlanEntity;
 import org.springframework.beans.factory.annotation.Value;
@@ -53,6 +57,8 @@ public class TestVerificationSkill implements EngineeringSkill {
     private final PatchApplyService patchApplyService;
 
     private final IncidentRegressionScaffoldService incidentRegressionScaffoldService;
+    private final RepairObservationService repairObservationService;
+    private final CodeOpsHookService hookService;
 
     @Value("${codeops.test.execution.enabled:false}")
     private boolean testExecutionEnabled;
@@ -66,7 +72,9 @@ public class TestVerificationSkill implements EngineeringSkill {
                                  CodeOpsTestPatchAgentService testPatchAgentService,
                                  PatchValidationService patchValidationService,
                                  PatchApplyService patchApplyService,
-                                 IncidentRegressionScaffoldService incidentRegressionScaffoldService) {
+                                 IncidentRegressionScaffoldService incidentRegressionScaffoldService,
+                                 RepairObservationService repairObservationService,
+                                 CodeOpsHookService hookService) {
         this.toolGateway = toolGateway;
         this.backgroundToolTaskService = backgroundToolTaskService;
         this.testVerificationAgentService = testVerificationAgentService;
@@ -74,6 +82,8 @@ public class TestVerificationSkill implements EngineeringSkill {
         this.patchValidationService = patchValidationService;
         this.patchApplyService = patchApplyService;
         this.incidentRegressionScaffoldService = incidentRegressionScaffoldService;
+        this.repairObservationService = repairObservationService;
+        this.hookService = hookService;
     }
 
     @Override
@@ -260,6 +270,12 @@ public class TestVerificationSkill implements EngineeringSkill {
                 + " 项，覆盖缺口 "
                 + plan.getCoverageGaps().size()
                 + " 项。";
+        recordTestObservation(task, status, summary, rawOutput);
+        repairObservationService.updateLatestPatchAttempt(task, testAttemptResult(rawOutput, status, summary),
+                Map.of(), "SUCCESS".equals(status));
+        rawOutput.put("repairObservations", task.getContext() == null
+                ? List.of()
+                : task.getContext().getOrDefault(RepairObservationService.REPAIR_OBSERVATIONS_KEY, List.of()));
 
         return EngineeringSkillResultEntity.builder()
                 .skillId(SKILL_ID)
@@ -275,6 +291,48 @@ public class TestVerificationSkill implements EngineeringSkill {
                 .nextActions(List.of("先运行推荐的定向测试", "若无相关测试则补充最小回归用例", "最后运行模块级 compile/test 作为兜底验证"))
                 .rawOutput(rawOutput)
                 .build();
+    }
+
+    private Map<String, Object> testAttemptResult(Map<String, Object> rawOutput, String status, String summary) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("status", status == null ? "" : status);
+        result.put("summary", summary == null ? "" : summary);
+        result.put("testsPassed", rawOutput != null && Boolean.TRUE.equals(rawOutput.get("testsPassed")));
+        result.put("testFailureType", rawOutput == null ? "" : rawOutput.getOrDefault("testFailureType", ""));
+        result.put("failedTestFiles", rawOutput == null ? List.of() : rawOutput.getOrDefault("failedTestFiles", List.of()));
+        result.put("failedAssertions", rawOutput == null ? List.of() : rawOutput.getOrDefault("failedAssertions", List.of()));
+        result.put("mavenCommands", rawOutput == null ? List.of() : rawOutput.getOrDefault("mavenCommands", List.of()));
+        result.put("testExecutionResults", rawOutput == null ? List.of() : rawOutput.getOrDefault("testExecutionResults", List.of()));
+        result.put("verificationBlockedReason", rawOutput == null ? "" : rawOutput.getOrDefault("verificationBlockedReason", ""));
+        return result;
+    }
+
+    private void recordTestObservation(EngineeringTaskEntity task,
+                                       String status,
+                                       String summary,
+                                       Map<String, Object> rawOutput) {
+        if (task == null) {
+            return;
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("status", status == null ? "" : status);
+        payload.put("mavenCommands", rawOutput == null ? List.of() : rawOutput.getOrDefault("mavenCommands", List.of()));
+        payload.put("testExecutionResults", rawOutput == null ? List.of() : rawOutput.getOrDefault("testExecutionResults", List.of()));
+        payload.put("testsPassed", rawOutput != null && Boolean.TRUE.equals(rawOutput.get("testsPassed")));
+        payload.put("testFailureType", rawOutput == null ? "" : rawOutput.getOrDefault("testFailureType", ""));
+        payload.put("verificationBlockedReason", rawOutput == null ? "" : rawOutput.getOrDefault("verificationBlockedReason", ""));
+        hookService.emit(task, CodeOpsHookEvent.AFTER_TEST, "TEST_VERIFICATION", summary, payload);
+        repairObservationService.record(task, RepairObservationEntity.builder()
+                .phase("TEST_VERIFICATION")
+                .source("skill")
+                .action("test_verification")
+                .status(status == null ? "" : status)
+                .success("SUCCESS".equals(status) || "NO_DIFF".equals(status))
+                .summary(summary == null ? "" : summary)
+                .errorType(rawOutput == null ? "" : String.valueOf(rawOutput.getOrDefault("testFailureType", "")))
+                .errorMessage(rawOutput == null ? "" : String.valueOf(rawOutput.getOrDefault("rawFailureSummary", "")))
+                .output(payload)
+                .build());
     }
 
     @SuppressWarnings("unchecked")

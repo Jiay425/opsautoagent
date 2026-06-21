@@ -106,6 +106,8 @@ public class EngineeringTaskTraceService {
         putIfPresent(summary, "taskNotifications", context.get("taskNotifications"));
         putIfPresent(summary, "agentRuntimeTrace", context.get("agentRuntimeTrace"));
         putIfPresent(summary, "toolRuntimeTrace", context.get("toolRuntimeTrace"));
+        putIfPresent(summary, "repairObservations", context.get("repairObservations"));
+        putIfPresent(summary, "patchAttempts", context.get("patchAttempts"));
     }
 
     private Map<String, Object> compactMap(Map<String, Object> source, String... keys) {
@@ -262,13 +264,14 @@ public class EngineeringTaskTraceService {
                 "localizationBlocking", "preLoopCodeContextPack", "evidenceGraphSummary", "evidenceGraphRankedCodeNodes", "evidenceGraph"));
         artifacts.put("patch", pick(raw, "repairPlan", "patchGenerated", "llmGenerated", "exactReplaceBlocks",
                 "exactReplaceApply", "patchApply", "patchScopeGuard", "patchSandbox", "patchQuality",
-                "compileGate", "failureDiagnostic", "changedFiles"));
+                "compileGate", "failureDiagnostic", "repairObservations", "patchAttempts", "changedFiles"));
         artifacts.put("tests", pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults",
-                "failureDiagnostic", "testFailureType", "failedTestFiles", "failedAssertions"));
+                "failureDiagnostic", "testFailureType", "failedTestFiles", "failedAssertions", "repairObservations"));
         artifacts.put("releaseRisk", pick(raw, "releaseRiskReport", "riskPoints", "observationMetrics",
                 "rollbackConcerns", "humanApprovalPoints", "codeReview", "reviewVerdict",
                 "qualityScore", "patchDecision", "patchFacts", "manualTakeoverRequired",
-                "autoPatchBlockedReason", "verificationBlockedReason", "blockedAutomationSummary"));
+                "autoPatchBlockedReason", "verificationBlockedReason", "blockedAutomationSummary",
+                "repairObservations", "patchAttempts"));
         artifacts.put("guardrails", guardrails == null ? Map.of() : guardrails);
         return artifacts;
     }
@@ -290,14 +293,15 @@ public class EngineeringTaskTraceService {
             case "knowledge_rag" -> pick(raw, "knowledgeMatches", "runbookMatches");
             case "code_repair" -> pick(raw, "repairPlan", "llmGenerated", "patchGenerated", "rootCause",
                     "exactReplaceBlocks", "exactReplaceApply", "patchApply", "patchScopeGuard",
-                    "patchSandbox", "patchQuality", "compileGate", "failureDiagnostic");
+                    "patchSandbox", "patchQuality", "compileGate", "failureDiagnostic",
+                    "repairObservations", "patchAttempts");
             case "test_verification" -> pick(raw, "recommendedTests", "mavenCommands", "testExecutionResults",
                     "testExecutionAsync", "queuedBackgroundTasks", "backgroundToolTasks", "taskNotifications",
-                    "testFailureType", "failedTestFiles");
+                    "testFailureType", "failedTestFiles", "repairObservations");
             case "release_risk" -> pick(raw, "releaseRiskReport", "humanApprovalPoints", "releaseRiskReasoning",
                     "codeReview", "reviewVerdict", "qualityScore", "patchDecision", "patchFacts",
                     "modelRouting", "manualTakeoverRequired", "autoPatchBlockedReason",
-                    "verificationBlockedReason", "blockedAutomationSummary");
+                    "verificationBlockedReason", "blockedAutomationSummary", "repairObservations", "patchAttempts");
             default -> Map.of();
         };
     }
@@ -329,6 +333,8 @@ public class EngineeringTaskTraceService {
         putIfPresent(highlights, "exactReplaceBlocks", rawEvidence.get("exactReplaceBlocks"));
         putIfPresent(highlights, "exactReplaceApply", rawEvidence.get("exactReplaceApply"));
         putIfPresent(highlights, "failureDiagnostic", rawEvidence.get("failureDiagnostic"));
+        putIfPresent(highlights, "repairObservations", rawEvidence.get("repairObservations"));
+        putIfPresent(highlights, "patchAttempts", rawEvidence.get("patchAttempts"));
         putIfPresent(highlights, "patchValidation", rawEvidence.get("patchValidation"));
         putIfPresent(highlights, "patchApply", rawEvidence.get("patchApply"));
         putIfPresent(highlights, "rootCause", rawEvidence.get("rootCause"));

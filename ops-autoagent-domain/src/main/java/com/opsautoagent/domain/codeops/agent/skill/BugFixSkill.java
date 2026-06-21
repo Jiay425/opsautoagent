@@ -4,7 +4,10 @@ import com.opsautoagent.domain.codeops.agent.bugfix.CodeOpsBugFixAgentInput;
 import com.opsautoagent.domain.codeops.agent.bugfix.CodeOpsBugFixAgentOutput;
 import com.opsautoagent.domain.codeops.agent.bugfix.CodeOpsBugFixAgentService;
 import com.opsautoagent.domain.codeops.agent.memory.IncidentMemoryService;
+import com.opsautoagent.domain.codeops.agent.hook.CodeOpsHookEvent;
+import com.opsautoagent.domain.codeops.agent.hook.CodeOpsHookService;
 import com.opsautoagent.domain.codeops.agent.patch.PatchApplyResult;
+import com.opsautoagent.domain.codeops.agent.repair.RepairObservationService;
 import com.opsautoagent.domain.codeops.agent.security.AgentPermissionPolicy;
 import com.opsautoagent.domain.codeops.agent.security.HumanApprovalGate;
 import com.opsautoagent.domain.codeops.agent.patch.PatchApplyService;
@@ -26,6 +29,7 @@ import com.opsautoagent.domain.codeops.model.entity.CodeSnippetEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringSkillEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringSkillResultEntity;
 import com.opsautoagent.domain.codeops.model.entity.EngineeringTaskEntity;
+import com.opsautoagent.domain.codeops.model.entity.PatchAttemptEntity;
 import com.opsautoagent.domain.codeops.model.entity.RepoDiffContextEntity;
 import com.opsautoagent.domain.codeops.model.entity.RepoDiffHunkEntity;
 import org.springframework.beans.factory.annotation.Value;
@@ -65,6 +69,8 @@ public class BugFixSkill implements EngineeringSkill {
     private final IncidentMemoryService incidentMemoryService;
     private final AgentPermissionPolicy permissionPolicy;
     private final HumanApprovalGate humanApprovalGate;
+    private final RepairObservationService repairObservationService;
+    private final CodeOpsHookService hookService;
 
     @Value("${codeops.bugfix.compile-timeout-ms:300000}")
     private long compileTimeoutMs;
@@ -78,7 +84,9 @@ public class BugFixSkill implements EngineeringSkill {
                        PatchDiffAnalysisService patchDiffAnalysisService,
                        IncidentMemoryService incidentMemoryService,
                        AgentPermissionPolicy permissionPolicy,
-                       HumanApprovalGate humanApprovalGate) {
+                       HumanApprovalGate humanApprovalGate,
+                       RepairObservationService repairObservationService,
+                       CodeOpsHookService hookService) {
         this.toolGateway = toolGateway;
         this.bugFixAgentService = bugFixAgentService;
         this.patchValidationService = patchValidationService;
@@ -89,6 +97,8 @@ public class BugFixSkill implements EngineeringSkill {
         this.incidentMemoryService = incidentMemoryService;
         this.permissionPolicy = permissionPolicy;
         this.humanApprovalGate = humanApprovalGate;
+        this.repairObservationService = repairObservationService;
+        this.hookService = hookService;
     }
 
     @Override
@@ -169,6 +179,7 @@ public class BugFixSkill implements EngineeringSkill {
         String fallbackPatch = buildPatchDraft(task, diffContext, codeSnippets);
         ExactReplaceBuildResult exactReplaceBuild = buildPatchFromExactReplaceBlocks(
                 value(diffContext.getRepositoryPath(), ""), llmFix.getExactReplaceBlocks());
+        recordExactReplaceObservation(task, exactReplaceBuild);
         String rewritePatch = buildPatchFromFileRewrites(value(diffContext.getRepositoryPath(), ""), llmFix.getFileRewrites());
         String llmPatch = !isBlank(rewritePatch)
                 ? rewritePatch
@@ -198,6 +209,9 @@ public class BugFixSkill implements EngineeringSkill {
                 llmFix.getFileRewrites(),
                 effectiveRepairScope);
         if (!scopeGuard.isPassed()) {
+            recordPatchAttempt(task, llmFix, exactReplaceBuild, effectiveRepairScope,
+                    PatchApplyResult.skipped(suggestion.getRepositoryPath(), "Blocked by PatchScopeGuard"),
+                    SourceValidationResult.skipped(), null, false, "scope guard blocked");
             return EngineeringSkillResultEntity.builder()
                     .skillId(SKILL_ID)
                     .status("FAILED")
@@ -284,15 +298,35 @@ public class BugFixSkill implements EngineeringSkill {
                 suggestion.getPatchDraft());
         Map<String, String> sourceSnapshot = snapshotFiles(executionRepositoryPath, executionPatchValidation.getExistingTouchedFiles());
         List<String> newSourceFiles = missingFiles(executionRepositoryPath, executionPatchValidation.getTouchedFiles());
+        hookService.emit(task, CodeOpsHookEvent.BEFORE_PATCH_APPLY, "BUG_FIX",
+                "before patch apply", Map.of(
+                        "repositoryPath", executionRepositoryPath,
+                        "touchedFiles", executionPatchValidation.getTouchedFiles() == null ? List.of() : executionPatchValidation.getTouchedFiles(),
+                        "editMethod", resolveEditMethod(llmFix, exactReplaceBuild)
+                ));
         PatchApplyResult patchApply = shouldApplyPatch(task)
                 ? patchApplyService.apply(executionRepositoryPath, suggestion.getPatchDraft())
                 : PatchApplyResult.skipped(suggestion.getRepositoryPath(), "Patch apply disabled. Set task context allowPatchApply=true to modify repository files.");
+        hookService.emit(task, CodeOpsHookEvent.AFTER_PATCH_APPLY, "BUG_FIX",
+                "after patch apply", Map.of(
+                        "applied", patchApply.isApplied(),
+                        "errorMessage", patchApply.getErrorMessage() == null ? "" : patchApply.getErrorMessage(),
+                        "result", patchApply.toRawOutput()
+                ));
         SourceValidationResult sourceValidation = patchApply.isApplied()
                 ? validateTouchedJavaSources(executionRepositoryPath, executionPatchValidation.getTouchedFiles())
                 : SourceValidationResult.skipped();
+        recordSourceValidationObservation(task, sourceValidation, patchApply.isApplied());
         EngineeringToolGateway.CommandResult compileGate = patchApply.isApplied() && sourceValidation.valid()
                 ? runCompileGate(executionRepositoryPath)
                 : null;
+        hookService.emit(task, CodeOpsHookEvent.AFTER_COMPILE, "BUG_FIX",
+                "after compile gate", Map.of(
+                        "requested", compileGate != null,
+                        "success", compileGate == null ? sourceValidation.valid() : compileGate.success(),
+                        "command", compileGate == null ? List.of() : compileGate.command(),
+                        "exitCode", compileGate == null ? 0 : compileGate.exitCode()
+                ));
         boolean compileGatePassed = sourceValidation.valid() && (compileGate == null || compileGate.success());
         boolean patchRolledBack = false;
         if (patchApply.isApplied() && !compileGatePassed) {
@@ -305,6 +339,8 @@ public class BugFixSkill implements EngineeringSkill {
         String status = fixReady
                 ? "SUCCESS"
                 : (incidentToFix && !llmPatchAvailable ? "FAILED" : (patchApply.isApplied() && !compileGatePassed ? "FAILED" : "NO_DIFF"));
+        recordPatchAttempt(task, llmFix, exactReplaceBuild, effectiveRepairScope,
+                patchApply, sourceValidation, compileGate, "SUCCESS".equals(status), status);
 
         return EngineeringSkillResultEntity.builder()
                 .skillId(SKILL_ID)
@@ -420,8 +456,128 @@ public class BugFixSkill implements EngineeringSkill {
             output.put("reflectionRound", round instanceof Number ? ((Number) round).intValue() : 0);
             output.put("reflectionDiagnosticsUsed",
                     task.getContext().getOrDefault("incidentFixReflectionDiagnostics", List.of()));
+            output.put("repairObservations",
+                    task.getContext().getOrDefault(RepairObservationService.REPAIR_OBSERVATIONS_KEY, List.of()));
+            output.put("patchAttempts",
+                    task.getContext().getOrDefault(RepairObservationService.PATCH_ATTEMPTS_KEY, List.of()));
         }
         return output;
+    }
+
+    private void recordPatchAttempt(EngineeringTaskEntity task,
+                                    CodeOpsBugFixAgentOutput llmFix,
+                                    ExactReplaceBuildResult exactReplaceBuild,
+                                    Map<String, Object> effectiveRepairScope,
+                                    PatchApplyResult patchApply,
+                                    SourceValidationResult sourceValidation,
+                                    EngineeringToolGateway.CommandResult compileGate,
+                                    boolean recovered,
+                                    String outcome) {
+        if (repairObservationService == null || task == null) {
+            return;
+        }
+        Map<String, Object> compile = compileGate == null ? Map.of("requested", false) : Map.of(
+                "requested", true,
+                "command", compileGate.command(),
+                "success", compileGate.success(),
+                "exitCode", compileGate.exitCode(),
+                "costMillis", compileGate.costMillis(),
+                "output", compileGate.output()
+        );
+        PatchAttemptEntity attempt = PatchAttemptEntity.builder()
+                .skillId(SKILL_ID)
+                .editMethod(resolveEditMethod(llmFix, exactReplaceBuild))
+                .inputFailureDiagnostic(latestFailureDiagnostic(task))
+                .filesRead(extractFilesRead(task))
+                .scopeDecision(llmFix == null || llmFix.getScopeDecision() == null ? Map.of() : llmFix.getScopeDecision())
+                .applyResult(patchApply == null ? Map.of() : patchApply.toRawOutput())
+                .sourceValidationResult(sourceValidation == null ? Map.of() : sourceValidation.toRawOutput())
+                .compileResult(compile)
+                .testResult(Map.of("requested", false, "reason", "test verification runs in a separate skill"))
+                .nextFailureDiagnostic(Map.of("outcome", outcome == null ? "" : outcome))
+                .recovered(recovered)
+                .build();
+        repairObservationService.recordPatchAttempt(task, attempt);
+    }
+
+    private void recordExactReplaceObservation(EngineeringTaskEntity task, ExactReplaceBuildResult exactReplaceBuild) {
+        if (repairObservationService == null || task == null || exactReplaceBuild == null || !exactReplaceBuild.requested()) {
+            return;
+        }
+        Map<String, Object> output = exactReplaceBuild.toRawOutput();
+        repairObservationService.record(task, com.opsautoagent.domain.codeops.model.entity.RepairObservationEntity.builder()
+                .phase("BUG_FIX")
+                .source("edit")
+                .action("exact_replace_apply")
+                .status(exactReplaceBuild.failures().isEmpty() ? "SUCCESS" : "FAILED")
+                .success(exactReplaceBuild.failures().isEmpty())
+                .summary("exactReplaceBlocks applied=" + exactReplaceBuild.appliedFiles().size()
+                        + ", failed=" + exactReplaceBuild.failures().size())
+                .errorType(exactReplaceBuild.failures().isEmpty() ? "" : "EXACT_REPLACE_FAILED")
+                .errorMessage(exactReplaceBuild.failures().isEmpty() ? "" : String.join("; ", exactReplaceBuild.failures()))
+                .output(output)
+                .build());
+    }
+
+    private void recordSourceValidationObservation(EngineeringTaskEntity task,
+                                                  SourceValidationResult sourceValidation,
+                                                  boolean requested) {
+        if (repairObservationService == null || task == null || sourceValidation == null) {
+            return;
+        }
+        Map<String, Object> output = new LinkedHashMap<>(sourceValidation.toRawOutput());
+        output.put("requested", requested);
+        repairObservationService.record(task, com.opsautoagent.domain.codeops.model.entity.RepairObservationEntity.builder()
+                .phase("BUG_FIX")
+                .source("validation")
+                .action("source_validation")
+                .status(!requested ? "SKIPPED" : (sourceValidation.valid() ? "SUCCESS" : "FAILED"))
+                .success(!requested || sourceValidation.valid())
+                .summary(!requested ? "source validation skipped: patch not applied" : (sourceValidation.valid() ? "source validation passed"
+                        : "source validation failed: " + String.join("; ", sourceValidation.errors()))
+                )
+                .errorType(sourceValidation.valid() ? "" : "SOURCE_STRUCTURE_INVALID")
+                .errorMessage(sourceValidation.valid() ? "" : String.join("; ", sourceValidation.errors()))
+                .output(output)
+                .build());
+    }
+
+    private String resolveEditMethod(CodeOpsBugFixAgentOutput llmFix, ExactReplaceBuildResult exactReplaceBuild) {
+        if (exactReplaceBuild != null && exactReplaceBuild.requested()) {
+            return "exactReplace";
+        }
+        if (llmFix != null && llmFix.getFileRewrites() != null && !llmFix.getFileRewrites().isEmpty()) {
+            return "fileRewrite";
+        }
+        if (llmFix != null && !isBlank(llmFix.getUnifiedDiffPatch())) {
+            return "unifiedDiff";
+        }
+        return "none";
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> latestFailureDiagnostic(EngineeringTaskEntity task) {
+        if (task == null || task.getContext() == null) {
+            return Map.of();
+        }
+        Object diagnostics = task.getContext().get("incidentFixReflectionDiagnostics");
+        if (diagnostics instanceof List<?> list && !list.isEmpty()) {
+            Object last = list.get(list.size() - 1);
+            if (last instanceof Map<?, ?> map) {
+                Map<String, Object> result = new LinkedHashMap<>();
+                map.forEach((key, value) -> result.put(String.valueOf(key), value));
+                return result;
+            }
+        }
+        return Map.of();
+    }
+
+    private List<String> extractFilesRead(EngineeringTaskEntity task) {
+        List<String> files = new ArrayList<>(extractLocalizationTargetFiles(task));
+        if (files.isEmpty()) {
+            files.addAll(extractLocalizationCandidateFiles(task));
+        }
+        return files.stream().distinct().toList();
     }
 
     private SourceValidationResult validateTouchedJavaSources(String repositoryPath, List<String> touchedFiles) {

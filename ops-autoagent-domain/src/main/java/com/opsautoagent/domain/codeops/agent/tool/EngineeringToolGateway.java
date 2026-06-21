@@ -44,6 +44,7 @@ public class EngineeringToolGateway {
             tool("repo.find_tests", "Find tests related to changed code", "repository", "READ_ONLY", "READ_ONLY", "LOCAL_REPOSITORY"),
             tool("repo.maven", "Run Maven verification command under permission policy", "command", "MEDIUM", "COMMAND_EXECUTE", "LOCAL_COMMAND"),
             tool("repo.maven_background", "Start Maven verification command as a background task", "command", "MEDIUM", "COMMAND_EXECUTE", "LOCAL_COMMAND"),
+            tool("repo.exact_replace", "Replace exact text in a source file and return structured mismatch feedback", "repository", "MEDIUM", "SOURCE_WRITE", "LOCAL_REPOSITORY"),
             tool("task.background_status", "Read background tool task status", "task", "READ_ONLY", "READ_ONLY", "LOCAL_MEMORY"),
             tool("knowledge.search", "Search engineering knowledge documents", "knowledge", "READ_ONLY", "READ_ONLY", "LOCAL_REPOSITORY"),
             tool("ops.query_prometheus", "Query metrics for online diagnosis", "observability", "READ_ONLY", "EXTERNAL_CALL", "REAL_GATEWAY"),

@@ -75,9 +75,7 @@ public class AgentLoopService {
                 .executionContext(request == null ? null : request.getExecutionContext())
                 .build();
         ToolPermissionDecision permissionDecision = toolRegistry.previewPermission(toolRequest);
-        EngineeringToolResult toolResult = permissionDecision.isAllowed()
-                ? toolRegistry.execute(toolRequest)
-                : deniedResult(toolRequest.getToolName(), permissionDecision);
+        EngineeringToolResult toolResult = toolRegistry.execute(toolRequest);
         return AgentLoopStep.builder()
                 .turnNo(turn)
                 .toolCallId(toolCall == null ? "" : toolCall.getToolCallId())
@@ -88,13 +86,6 @@ public class AgentLoopService {
                 .startedAt(start)
                 .finishedAt(LocalDateTime.now())
                 .build();
-    }
-
-    private EngineeringToolResult deniedResult(String toolName, ToolPermissionDecision decision) {
-        if (decision.isRequiresApproval()) {
-            return EngineeringToolResult.requiresApproval(toolName, decision.getReason(), decision.getPolicy());
-        }
-        return EngineeringToolResult.denied(toolName, decision.getReason());
     }
 
     private boolean isHardStop(EngineeringToolResult result) {
