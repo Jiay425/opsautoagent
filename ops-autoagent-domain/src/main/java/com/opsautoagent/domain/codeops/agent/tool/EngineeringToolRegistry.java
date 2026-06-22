@@ -7,6 +7,7 @@ import com.opsautoagent.domain.codeops.agent.task.BackgroundToolTaskService;
 import com.opsautoagent.domain.codeops.model.entity.BackgroundToolTaskEntity;
 import com.opsautoagent.domain.codeops.agent.repair.RepairObservationService;
 import com.opsautoagent.domain.codeops.agent.hook.CodeOpsHookEvent;
+import com.opsautoagent.domain.codeops.agent.hook.CodeOpsHookResult;
 import com.opsautoagent.domain.codeops.agent.hook.CodeOpsHookService;
 import org.springframework.stereotype.Service;
 
@@ -69,7 +70,13 @@ public class EngineeringToolRegistry {
         if (request == null || request.getToolName() == null || request.getToolName().isBlank()) {
             return EngineeringToolResult.denied("", "Tool name is blank");
         }
-        emitToolHook(request, CodeOpsHookEvent.BEFORE_TOOL_USE, "before tool permission");
+        CodeOpsHookResult beforeHook = emitToolHook(request, CodeOpsHookEvent.BEFORE_TOOL_USE, "before tool permission");
+        if (beforeHook != null && !beforeHook.isAllowed()) {
+            EngineeringToolResult result = deniedByHook(request, beforeHook);
+            recordObservation(request, null, result);
+            emitToolHook(request, CodeOpsHookEvent.AFTER_TOOL_USE, result.getSummary());
+            return result;
+        }
         ToolPermissionDecision decision = permissionGate.decide(request, find(request.getToolName()));
         if (decision.isRequiresApproval()) {
             EngineeringToolResult result = EngineeringToolResult.requiresApproval(request.getToolName(), decision.getReason(), decision.getPolicy());
@@ -143,11 +150,29 @@ public class EngineeringToolRegistry {
                 decision == null ? "" : decision.getReason());
     }
 
-    private void emitToolHook(EngineeringToolRequest request, CodeOpsHookEvent event, String summary) {
+    private EngineeringToolResult deniedByHook(EngineeringToolRequest request, CodeOpsHookResult hookResult) {
+        Map<String, Object> output = new LinkedHashMap<>();
+        output.put("failureReason", hookResult != null && hookResult.isRequiresApproval()
+                ? "HOOK_APPROVAL_REQUIRED" : "HOOK_BLOCKED");
+        output.put("hookResult", hookResult == null ? Map.of() : hookResult.toRawOutput());
+        output.put("toolName", request == null ? "" : request.getToolName());
+        return EngineeringToolResult.builder()
+                .toolName(request == null ? "" : request.getToolName())
+                .success(false)
+                .status(hookResult != null && hookResult.isRequiresApproval() ? "REQUIRES_APPROVAL" : "DENIED")
+                .summary(hookResult == null ? "blocked by hook" : hookResult.getReason())
+                .output(output)
+                .errorType(hookResult != null && hookResult.isRequiresApproval()
+                        ? "HOOK_APPROVAL_REQUIRED" : "HOOK_BLOCKED")
+                .errorMessage(hookResult == null ? "blocked by hook" : hookResult.getReason())
+                .build();
+    }
+
+    private CodeOpsHookResult emitToolHook(EngineeringToolRequest request, CodeOpsHookEvent event, String summary) {
         if (request == null || request.getTask() == null || hookService == null) {
-            return;
+            return CodeOpsHookResult.builder().allowed(true).build();
         }
-        hookService.emit(request.getTask(), event, "AGENT_TOOL", summary, Map.of(
+        return hookService.emit(request.getTask(), event, "AGENT_TOOL", summary, Map.of(
                 "toolName", request.getToolName() == null ? "" : request.getToolName(),
                 "arguments", request.getArguments() == null ? Map.of() : request.getArguments()
         ));
